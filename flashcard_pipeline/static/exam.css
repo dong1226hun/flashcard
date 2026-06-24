@@ -207,6 +207,11 @@ aside {
   margin-bottom: 14px;
 }
 
+.toolbar .btn {
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .deckbar {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(220px, 1.1fr);
@@ -1035,7 +1040,7 @@ button:focus-visible,
   }
 
   .toolbar {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .deckbar {
@@ -1070,7 +1075,14 @@ button:focus-visible,
 
 @media (max-width: 480px) {
   .toolbar {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .toolbar .btn {
+    min-height: 40px;
+    padding: 0 6px;
+    font-size: 0.78rem;
   }
 
   .card-body,

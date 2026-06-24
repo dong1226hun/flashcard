@@ -195,15 +195,25 @@ function loadSections() {
   els.chapterSelect.value = state.chapter || "";
 }
 
+function orderedCards(cards) {
+  return cards.slice().sort((a, b) => {
+    const orderA = Number.isFinite(a.static_order) ? a.static_order : Number.MAX_SAFE_INTEGER;
+    const orderB = Number.isFinite(b.static_order) ? b.static_order : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
+    return Number(a.card_id || 0) - Number(b.card_id || 0);
+  });
+}
+
 function cardsForSource() {
-  if (state.source === "favorites") return state.allCards.filter((card) => card.is_favorite);
-  if (state.source === "past_exams") return state.allCards.filter((card) => card.is_past_exam);
-  if (state.source === "wrong") return state.allCards.filter((card) => card.last_review_result === "wrong");
+  let cards = state.allCards;
+  if (state.source === "favorites") cards = state.allCards.filter((card) => card.is_favorite);
+  if (state.source === "past_exams") cards = state.allCards.filter((card) => card.is_past_exam);
+  if (state.source === "wrong") cards = state.allCards.filter((card) => card.last_review_result === "wrong");
   if (state.source === "chapter") {
     const chapter = String(state.chapter || "");
-    return state.allCards.filter((card) => String(card.chapter || "") === chapter);
+    cards = state.allCards.filter((card) => String(card.chapter || "") === chapter);
   }
-  return state.allCards.slice();
+  return orderedCards(cards);
 }
 
 function startSession() {
@@ -373,10 +383,11 @@ async function loadDataset() {
   const payload = await response.json();
   const favorites = favoriteOverrides();
   const reviews = reviewOverrides();
-  state.allCards = (payload.cards || []).map((card) => {
+  state.allCards = (payload.cards || []).map((card, index) => {
     const id = String(card.card_id);
     return {
       ...card,
+      static_order: index,
       is_favorite: Object.prototype.hasOwnProperty.call(favorites, id)
         ? Boolean(favorites[id])
         : Boolean(card.is_favorite),
