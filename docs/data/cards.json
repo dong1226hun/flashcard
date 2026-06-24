@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-24T16:15:59.836541+00:00",
+  "generated_at": "2026-06-24T23:28:38.219859+00:00",
   "card_count": 487,
   "cards": [
     {
@@ -6766,7 +6766,7 @@
       "card_id": 183,
       "document_id": "a0911d2976f2a1e5",
       "source_page": 107,
-      "caption_text": "그림 22-2F. 하악골융기. A, 치근단방사선영상에서 치근과 중첩된 방사선불투과상으로 관찰된다. B, 교합방사선영상에서 하악의 설측에 위치한 하악골융기가 뚜렷이 관찰된다.",
+      "caption_text": "그림 22-2F. 외골증",
       "confidence": 0.7609,
       "notes": "caption_match=above,caption-keyword,length; image_mode=raw",
       "image_id": 183,
@@ -6780,8 +6780,8 @@
       "is_past_exam": true,
       "chapter": "22",
       "chapter_title": "구강악안면부 양성종양의 영상진단",
-      "answer_title": "하악골융기",
-      "answer_detail": "A, 치근단방사선영상에서 치근과 중첩된 방사선불투과상으로 관찰된다. B, 교합방사선영상에서 하악의 설측에 위치한 하악골융기가 뚜렷이 관찰된다.",
+      "answer_title": "외골증",
+      "answer_detail": "",
       "image_url": "assets/raw/pdf/a0911d2976f2a1e5/page-107/image-960.png",
       "images": [
         {
@@ -13162,7 +13162,7 @@
       "card_id": 350,
       "document_id": "a0911d2976f2a1e5",
       "source_page": 225,
-      "caption_text": "그림 26-16A. 상악동 내의 파절된 치근",
+      "caption_text": "그림 26-16A. 상악동 내 파절된 치근",
       "confidence": 1.0,
       "notes": "caption_match=below,caption-keyword,length; image_mode=raw",
       "image_id": 350,
@@ -13176,8 +13176,8 @@
       "is_past_exam": true,
       "chapter": "26",
       "chapter_title": "상악동의 영상진단",
-      "answer_title": "상악동 내",
-      "answer_detail": "상악동 내의 파절된 치근",
+      "answer_title": "상악동 내 파절된 치근",
+      "answer_detail": "",
       "image_url": "assets/raw/pdf/a0911d2976f2a1e5/page-225/image-1894.png",
       "images": [
         {
@@ -15268,7 +15268,7 @@
       "card_id": 404,
       "document_id": "a0911d2976f2a1e5",
       "source_page": 263,
-      "caption_text": "그림 28-15A. 교합방사선영상에서 하악 정중부 주위의 골절이 관찰된다.",
+      "caption_text": "그림 28-15A. 양측하악골절. 교합방사선영상에서 하악 정중부 주위의 골절이 관찰된다.",
       "confidence": 1.0,
       "notes": "caption_match=below,caption-keyword,length; image_mode=raw",
       "image_id": 404,
@@ -15282,7 +15282,7 @@
       "is_past_exam": true,
       "chapter": "28",
       "chapter_title": "구강악안면부 외상의 진단",
-      "answer_title": "교합방사선영상",
+      "answer_title": "양측하악골절",
       "answer_detail": "교합방사선영상에서 하악 정중부 주위의 골절이 관찰된다.",
       "image_url": "assets/raw/pdf/a0911d2976f2a1e5/page-263/image-2199.png",
       "images": [
