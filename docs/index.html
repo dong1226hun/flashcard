@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>영상치의학 Flashcards</title>
+    <script>
+      (() => {
+        try {
+          document.documentElement.dataset.theme = localStorage.getItem("flashcard-theme") || "dark";
+        } catch {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./static/exam.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <h1>영상치의학 Flashcards</h1>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="true" aria-label="테마 전환">
+          <span class="theme-toggle-track" aria-hidden="true">
+            <span class="theme-toggle-thumb"></span>
+          </span>
+          <span class="theme-toggle-text">Dark</span>
+        </button>
+      </header>
+
+      <main>
+        <section class="study">
+          <div class="deckbar">
+            <button class="deck-tab active" data-source="all">
+              전체 문제 <strong id="section-all">0</strong>
+            </button>
+            <button class="deck-tab" data-source="favorites">
+              즐겨찾기 <strong id="section-favorites">0</strong>
+            </button>
+            <button class="deck-tab" data-source="past_exams">
+              기출문제 <strong id="section-past-exams">0</strong>
+            </button>
+            <button class="deck-tab" data-source="wrong">
+              틀린 문제 <strong id="section-wrong">0</strong>
+            </button>
+            <label class="chapter-picker">
+              단원별 문제
+              <select id="chapter-select"></select>
+            </label>
+          </div>
+
+          <div class="toolbar">
+            <button id="new-session" class="btn primary">New Session</button>
+            <button id="shuffle-session" class="btn">Shuffle</button>
+            <button id="favorite-card" class="btn favorite">즐겨찾기</button>
+          </div>
+
+          <div class="empty hidden" id="empty-state">
+            출제 가능한 카드가 없습니다.
+          </div>
+
+          <article class="card-shell" id="card-shell">
+            <div class="card-body">
+              <div class="image-stage">
+                <div class="card-number" id="card-number">1</div>
+                <div class="image-frame" id="image-frame" role="button" tabindex="0" aria-label="정답 보기">
+                  <div id="card-images" class="card-images" aria-label="Flashcard images"></div>
+                  <div class="answer-face" id="answer-face">
+                    <div class="answer-meta" id="answer-meta"></div>
+                    <div class="answer-title" id="answer-title"></div>
+                    <div class="answer-detail" id="answer-detail"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button id="prev-card" class="btn ghost">이전</button>
+              <button id="reveal-answer" class="btn primary">정답 <span class="kbd">Space</span></button>
+              <button id="next-card" class="btn ghost">다음</button>
+              <button id="correct-card" class="btn correct">맞춤</button>
+              <button id="wrong-card" class="btn wrong">틀림</button>
+            </div>
+          </article>
+        </section>
+
+        <aside>
+          <div class="side-card">
+            <div class="side-head">
+              <p class="side-title">Session Navigator</p>
+              <div class="progress"><div id="progress-bar"></div></div>
+              <p class="hint">
+                <span class="kbd">Space</span> 정답
+                <span class="kbd">←</span>/<span class="kbd">→</span> 이동
+                이미지 클릭 정답
+              </p>
+            </div>
+            <div class="list" id="card-list"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="./static/exam.js"></script>
+  </body>
+</html>

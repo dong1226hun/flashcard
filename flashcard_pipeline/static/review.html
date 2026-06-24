@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Card Admin</title>
+    <script>
+      (() => {
+        try {
+          document.documentElement.dataset.theme = localStorage.getItem("flashcard-theme") || "dark";
+        } catch {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/static/styles.css?v=7" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Card Admin</h1>
+            <p id="document-count">cards database</p>
+          </div>
+          <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="true" aria-label="테마 전환">
+            <span class="theme-toggle-track" aria-hidden="true">
+              <span class="theme-toggle-thumb"></span>
+            </span>
+            <span class="theme-toggle-text">Dark</span>
+          </button>
+        </div>
+
+        <section class="summary-grid" aria-label="Card summary">
+          <div class="metric">
+            <span class="metric-label">Cards</span>
+            <strong id="metric-cards">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Favorites</span>
+            <strong id="metric-favorites">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Past Exams</span>
+            <strong id="metric-past-exams">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Multi-image</span>
+            <strong id="metric-multi">0</strong>
+          </div>
+        </section>
+
+        <section class="filter-panel" aria-label="Card filters">
+          <label>
+            검색
+            <input id="query" type="search" placeholder="제목, caption, notes" />
+          </label>
+          <div class="filter-row">
+            <label>
+              단원
+              <input id="chapter" inputmode="numeric" placeholder="18" />
+            </label>
+            <label>
+              page
+              <input id="page" inputmode="numeric" placeholder="61" />
+            </label>
+          </div>
+          <label>
+            그림
+            <input id="figure" placeholder="18-21" />
+          </label>
+          <label class="check-row">
+            <input id="past-exam-only" type="checkbox" />
+            기출문제만
+          </label>
+          <label class="check-row">
+            <input id="multi-only" type="checkbox" />
+            여러 이미지 카드만
+          </label>
+          <button id="apply-filters" class="primary">필터 적용</button>
+        </section>
+
+        <section class="crop-panel" aria-label="PDF crop preview">
+          <div class="panel-title">PDF crop</div>
+          <div id="crop-preview" class="crop-preview">선택한 카드의 원본 PDF crop이 여기에 표시됩니다.</div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">Current Cards</p>
+            <h2 id="view-title">카드 관리</h2>
+          </div>
+          <div class="toolbar">
+            <label class="select-label">
+              Page size
+              <select id="page-size">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="merge-selected" class="secondary">선택 병합</button>
+            <button id="crop-selected" class="secondary">PDF crop</button>
+            <button id="refresh" class="secondary">Refresh</button>
+          </div>
+        </header>
+
+        <section id="card-list" class="card-list" aria-live="polite"></section>
+
+        <footer class="pager">
+          <button id="prev" class="secondary">Previous</button>
+          <span id="page-label">0</span>
+          <button id="next" class="secondary">Next</button>
+        </footer>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js?v=7"></script>
+  </body>
+</html>
