@@ -56,7 +56,9 @@ Build a static, read-only study site in `docs/`:
 python -m flashcard_pipeline.export_pages
 ```
 
-Then configure GitHub Pages to publish from the `docs/` folder. The export copies only the referenced card images into `docs/assets/` and writes the study data to `docs/data/cards.json`. Static favorite and correct/wrong state is stored in each browser's `localStorage`; admin edits still require the local review server.
+The export copies only the referenced card images into `docs/assets/` and writes the study data to `docs/data/cards.json`. Static favorite and correct/wrong state is stored in each browser's `localStorage`; admin edits still require the local review server.
+
+To deploy automatically, enable GitHub Pages with **Build and deployment > Source: GitHub Actions**. The workflow in `.github/workflows/pages.yml` rebuilds `docs/` from the committed SQLite data and publishes it on every push to `main`. If you prefer the classic Pages setup, you can also publish directly from the repository's `docs/` folder.
 
 ## Data Model
 
