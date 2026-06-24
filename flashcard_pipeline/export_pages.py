@@ -79,8 +79,8 @@ def write_json(path: Path, payload: Any) -> None:
 
 def write_index(output_dir: Path) -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    html = re.sub(r'href="/static/exam\.css(?:\?v=\d+)?"', 'href="./static/exam.css"', html)
-    html = re.sub(r'src="/static/exam\.js(?:\?v=\d+)?"', 'src="./static/exam.js"', html)
+    html = re.sub(r'href="/static/exam\.css(\?[^"]*)?"', r'href="./static/exam.css\1"', html)
+    html = re.sub(r'src="/static/exam\.js(\?[^"]*)?"', r'src="./static/exam.js\1"', html)
     (output_dir / "index.html").write_text(html, encoding="utf-8")
 
 
