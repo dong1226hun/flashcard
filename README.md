@@ -222,14 +222,16 @@ python -m flashcard_pipeline.extract_pdf "자료.pdf" --image-mode rendered --re
 ## 로컬 서버 실행
 
 ```powershell
-python -m flashcard_pipeline.review_server
+python -m flashcard_pipeline.review_server --open
 ```
 
-기본 주소는 다음과 같습니다.
+브라우저가 자동으로 열리지 않으면 터미널에 출력된 주소를 직접 엽니다. 서버가 실행되는 동안 터미널은 계속 열린 상태로 대기하며, 종료하려면 `Ctrl+C`를 누릅니다. 기본 주소는 다음과 같습니다.
 
 ```text
 http://127.0.0.1:8765
 ```
+
+기본 포트가 이미 사용 중이면 서버가 자동으로 다음 포트를 찾아 실행하고 실제 주소를 출력합니다.
 
 포트를 바꾸고 싶으면:
 

@@ -1,12 +1,22 @@
-import { createApiProvider, createStaticProvider } from "./providers.js";
-import { initThemeToggle } from "./theme.js";
-import { navigatorTitle, renderAnswer, renderQuestion } from "./renderers.js";
+import { createApiProvider, createStaticProvider } from "./providers.js?v=6";
+import { initThemeToggle } from "./theme.js?v=6";
+import { navigatorTitle, renderAnswer, renderQuestion } from "./renderers.js?v=6";
 
 initThemeToggle();
 
-const script = document.currentScript;
+function currentModuleScript() {
+  return document.currentScript
+    || document.querySelector('script[src*="static/study/main.js"][data-provider]');
+}
+
+const script = currentModuleScript();
 const providerMode = script?.dataset.provider === "static" ? "static" : "api";
 const provider = providerMode === "static" ? createStaticProvider() : createApiProvider();
+const TYPE_OPTIONS = [
+  ["image", "이미지"],
+  ["multiple_choice", "객관식"],
+  ["short_answer", "주관식"],
+];
 
 const state = {
   sessionId: null,
@@ -74,6 +84,35 @@ function chapterLabel(chapter, title = "") {
   return title || `단원 ${chapter}`;
 }
 
+function typeCounts() {
+  return new Map((state.sections?.types || []).map((item) => [item.type, Number(item.count) || 0]));
+}
+
+function renderTypeOptions() {
+  const counts = typeCounts();
+  const current = state.cardType || "";
+  els.typeSelect.replaceChildren();
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "문제유형";
+  els.typeSelect.appendChild(placeholder);
+
+  for (const [type, label] of TYPE_OPTIONS) {
+    const count = counts.get(type) || 0;
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = `${label} (${count})`;
+    option.disabled = count === 0;
+    els.typeSelect.appendChild(option);
+  }
+
+  if (current && !counts.get(current)) {
+    state.cardType = "";
+  }
+  els.typeSelect.value = state.cardType || "";
+}
+
 function currentCard() {
   return state.cards[state.index];
 }
@@ -96,6 +135,7 @@ async function loadSections() {
   els.sectionFavorites.textContent = state.sections.favorites;
   els.sectionPastExams.textContent = state.sections.past_exams;
   els.sectionWrong.textContent = state.sections.wrong;
+  renderTypeOptions();
   els.chapterSelect.replaceChildren();
 
   const placeholder = document.createElement("option");

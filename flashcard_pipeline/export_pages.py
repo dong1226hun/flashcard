@@ -84,6 +84,7 @@ def copy_static(output_dir: Path) -> None:
     copytree_replace(STATIC_DIR / "styles", static_dir / "styles")
     copytree_replace(STATIC_DIR / "fonts", static_dir / "fonts")
     copytree_replace(STATIC_DIR / "study", static_dir / "study")
+    shutil.copy2(STATIC_DIR / "theme.js", static_dir / "theme.js")
 
 
 def copy_assets(output_dir: Path, asset_paths: set[str]) -> tuple[int, int]:

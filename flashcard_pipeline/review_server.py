@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import errno
+import hashlib
 import json
 import mimetypes
+import re
 import sqlite3
 import sys
+import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from .answer_fields import answer_fields_from_caption
 from .db import CARD_TYPES, DEFAULT_DB_PATH, append_note, connect, init_db
 from .export_pages import DEFAULT_OUTPUT_DIR, export_pages
-from .media import safe_media_path
+from .media import GENERATED_MEDIA_ROOT, media_file_path, media_url, safe_media_path
 from .study import (
     available_cards,
     card_dto,
@@ -28,6 +34,14 @@ from .study import (
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+UPLOAD_MEDIA_ROOT = GENERATED_MEDIA_ROOT / "uploads"
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+PORT_FALLBACK_ATTEMPTS = 20
+UPLOAD_CONTENT_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+}
 
 
 def int_query(query: dict[str, list[str]], key: str, default: int, *, minimum: int = 0, maximum: int = 500) -> int:
@@ -95,6 +109,8 @@ class ReviewServer(BaseHTTPRequestHandler):
             return self.api_study_cards(parse_qs(parsed.query))
         if parsed.path == "/api/cards":
             return self.api_cards(parse_qs(parsed.query))
+        if parsed.path == "/api/images":
+            return self.api_images(parse_qs(parsed.query))
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -112,6 +128,10 @@ class ReviewServer(BaseHTTPRequestHandler):
             return self.api_merge_cards(self.read_json_body())
         if parsed.path == "/api/static-export":
             return self.api_static_export()
+        if len(parts) == 4 and parts[:2] == ["api", "cards"] and parts[3] == "images":
+            return self.api_add_card_image(int(parts[2]), self.read_json_body())
+        if len(parts) == 5 and parts[:2] == ["api", "cards"] and parts[3] == "images" and parts[4] == "upload":
+            return self.api_upload_card_image(int(parts[2]), self.read_json_body())
         if len(parts) == 4 and parts[:2] == ["api", "cards"] and parts[3] == "split":
             return self.api_split_card(int(parts[2]))
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
@@ -128,6 +148,8 @@ class ReviewServer(BaseHTTPRequestHandler):
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) == 3 and parts[:2] == ["api", "cards"]:
             return self.api_delete_card(int(parts[2]))
+        if len(parts) == 5 and parts[:2] == ["api", "cards"] and parts[3] == "images":
+            return self.api_remove_card_image(int(parts[2]), int(parts[4]))
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
 
     def serve_static(self, name: str) -> None:
@@ -146,6 +168,7 @@ class ReviewServer(BaseHTTPRequestHandler):
         data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -295,6 +318,21 @@ class ReviewServer(BaseHTTPRequestHandler):
             conn.close()
         self.send_json(payload)
 
+    def api_images(self, query: dict[str, list[str]]) -> None:
+        conn = self.with_db()
+        try:
+            try:
+                payload = list_available_images(conn, query.get("card_id", [""])[0])
+            except (TypeError, ValueError) as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except LookupError as error:
+                self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
+                return
+        finally:
+            conn.close()
+        self.send_json(payload)
+
     def api_update_card(self, card_id: int, payload: dict) -> None:
         conn = self.with_db()
         try:
@@ -323,6 +361,51 @@ class ReviewServer(BaseHTTPRequestHandler):
                 return
             except LookupError:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Card not found")
+                return
+        finally:
+            conn.close()
+        self.send_json(card)
+
+    def api_add_card_image(self, card_id: int, payload: dict) -> None:
+        conn = self.with_db()
+        try:
+            try:
+                card = add_card_image(conn, card_id, payload.get("image_id"))
+            except (TypeError, ValueError) as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except LookupError as error:
+                self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
+                return
+        finally:
+            conn.close()
+        self.send_json(card)
+
+    def api_upload_card_image(self, card_id: int, payload: dict) -> None:
+        conn = self.with_db()
+        try:
+            try:
+                card = upload_card_image(conn, card_id, payload)
+            except (TypeError, ValueError) as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except LookupError as error:
+                self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
+                return
+        finally:
+            conn.close()
+        self.send_json(card, HTTPStatus.CREATED)
+
+    def api_remove_card_image(self, card_id: int, image_id: int) -> None:
+        conn = self.with_db()
+        try:
+            try:
+                card = remove_card_image(conn, card_id, image_id)
+            except ValueError as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except LookupError as error:
+                self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
                 return
         finally:
             conn.close()
@@ -424,6 +507,299 @@ def get_card_payload(conn: sqlite3.Connection, card_id: int) -> dict:
     if not payload["items"]:
         raise LookupError("Card not found")
     return payload["items"][0]
+
+
+def require_card(conn: sqlite3.Connection, card_id: object) -> sqlite3.Row:
+    try:
+        ident = int(card_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid card_id") from error
+    row = conn.execute("SELECT * FROM cards WHERE id = ?", (ident,)).fetchone()
+    if row is None:
+        raise LookupError("Card not found")
+    return row
+
+
+def require_image(conn: sqlite3.Connection, image_id: object) -> sqlite3.Row:
+    try:
+        ident = int(image_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid image_id") from error
+    row = conn.execute("SELECT * FROM extracted_images WHERE id = ?", (ident,)).fetchone()
+    if row is None:
+        raise LookupError("Image not found")
+    return row
+
+
+def image_payload(row: sqlite3.Row, *, attached: bool = False) -> dict:
+    return {
+        "image_id": int(row["id"]),
+        "document_id": row["document_id"],
+        "page_number": row["page_number"],
+        "page_image_index": row["page_image_index"],
+        "src": media_url(row["file_path"]),
+        "image_url": media_url(row["file_path"]),
+        "width": row["width"],
+        "height": row["height"],
+        "is_attached": attached,
+    }
+
+
+def list_available_images(conn: sqlite3.Connection, card_id: object, *, limit: int = 120) -> dict:
+    card = require_card(conn, card_id)
+    rows = conn.execute(
+        """
+        SELECT
+            i.*,
+            CASE WHEN ci.card_id IS NULL THEN 0 ELSE 1 END AS is_attached
+        FROM extracted_images i
+        LEFT JOIN card_images ci ON ci.card_id = ? AND ci.image_id = i.id
+        WHERE i.document_id = ?
+        ORDER BY ABS(i.page_number - ?), i.page_number, i.page_image_index, i.id
+        LIMIT ?
+        """,
+        (card["id"], card["document_id"], card["source_page"], limit),
+    ).fetchall()
+    return {
+        "card_id": int(card["id"]),
+        "items": [image_payload(row, attached=bool(row["is_attached"])) for row in rows],
+    }
+
+
+def next_card_image_sort_order(conn: sqlite3.Connection, card_id: int) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(sort_order) + 1, 0) AS next_order FROM card_images WHERE card_id = ?",
+        (card_id,),
+    ).fetchone()
+    return int(row["next_order"] or 0)
+
+
+def reindex_card_images(conn: sqlite3.Connection, card_id: int) -> None:
+    rows = conn.execute(
+        "SELECT id FROM card_images WHERE card_id = ? ORDER BY sort_order, id",
+        (card_id,),
+    ).fetchall()
+    for index, row in enumerate(rows):
+        conn.execute("UPDATE card_images SET sort_order = ? WHERE id = ?", (index, row["id"]))
+
+
+def add_card_image(conn: sqlite3.Connection, card_id: object, image_id: object) -> dict:
+    card = require_card(conn, card_id)
+    image = require_image(conn, image_id)
+    if image["document_id"] != card["document_id"]:
+        raise ValueError("Image belongs to another document")
+
+    existing = conn.execute(
+        "SELECT id FROM card_images WHERE card_id = ? AND image_id = ?",
+        (card["id"], image["id"]),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            """
+            INSERT INTO card_images (card_id, image_id, sort_order, source_caption_text)
+            VALUES (?, ?, ?, ?)
+            """,
+            (card["id"], image["id"], next_card_image_sort_order(conn, int(card["id"])), card["caption_text"] or ""),
+        )
+        conn.execute("UPDATE cards SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (card["id"],))
+        conn.commit()
+    return get_card_payload(conn, int(card["id"]))
+
+
+def remove_card_image(conn: sqlite3.Connection, card_id: object, image_id: object) -> dict:
+    card = require_card(conn, card_id)
+    image = require_image(conn, image_id)
+    cursor = conn.execute(
+        "DELETE FROM card_images WHERE card_id = ? AND image_id = ?",
+        (card["id"], image["id"]),
+    )
+    if cursor.rowcount == 0:
+        raise LookupError("Image is not attached to card")
+    reindex_card_images(conn, int(card["id"]))
+    conn.execute("UPDATE cards SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (card["id"],))
+    conn.commit()
+    return get_card_payload(conn, int(card["id"]))
+
+
+def slug_path_part(value: object) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    return slug or "document"
+
+
+def upload_content_type(payload: dict) -> tuple[str, str]:
+    filename = str(payload.get("filename") or "")
+    content_type = str(payload.get("content_type") or "").split(";", 1)[0].strip().lower()
+    if not content_type and filename:
+        content_type = (mimetypes.guess_type(filename)[0] or "").lower()
+    ext = UPLOAD_CONTENT_TYPES.get(content_type)
+    if not ext:
+        raise ValueError("Only PNG, JPEG, and WebP images can be uploaded")
+    return content_type, ext
+
+
+def decode_upload_data(value: object) -> bytes:
+    text = str(value or "").strip()
+    if text.startswith("data:") and "," in text:
+        text = text.split(",", 1)[1]
+    try:
+        data = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("Invalid image data") from error
+    if not data:
+        raise ValueError("Image data is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError("Image is too large")
+    return data
+
+
+def image_dimensions(data: bytes, ext: str) -> tuple[int, int]:
+    try:
+        import fitz  # type: ignore
+
+        filetype = "jpeg" if ext == "jpg" else ext
+        with fitz.open(stream=data, filetype=filetype) as document:
+            if document.page_count:
+                pixmap = document[0].get_pixmap(alpha=False)
+                if pixmap.width > 0 and pixmap.height > 0:
+                    return int(pixmap.width), int(pixmap.height)
+    except Exception:
+        pass
+    return image_dimensions_from_header(data, ext)
+
+
+def image_dimensions_from_header(data: bytes, ext: str) -> tuple[int, int]:
+    if ext == "png" and data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if ext == "jpg" and data.startswith(b"\xff\xd8"):
+        return jpeg_dimensions(data)
+    if ext == "webp" and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return webp_dimensions(data)
+    raise ValueError("Could not read image dimensions")
+
+
+def jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    index = 2
+    sof_markers = set(range(0xC0, 0xC4)) | set(range(0xC5, 0xC8)) | set(range(0xC9, 0xCC)) | set(range(0xCD, 0xD0))
+    while index + 9 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        while index < len(data) and data[index] == 0xFF:
+            index += 1
+        if index >= len(data):
+            break
+        marker = data[index]
+        index += 1
+        if marker in {0xD8, 0xD9}:
+            continue
+        if index + 2 > len(data):
+            break
+        segment_length = int.from_bytes(data[index : index + 2], "big")
+        if segment_length < 2 or index + segment_length > len(data):
+            break
+        if marker in sof_markers and segment_length >= 7:
+            height = int.from_bytes(data[index + 3 : index + 5], "big")
+            width = int.from_bytes(data[index + 5 : index + 7], "big")
+            if width > 0 and height > 0:
+                return width, height
+        index += segment_length
+    raise ValueError("Could not read JPEG dimensions")
+
+
+def webp_dimensions(data: bytes) -> tuple[int, int]:
+    chunk = data[12:16]
+    if chunk == b"VP8X" and len(data) >= 30:
+        width = int.from_bytes(data[24:27], "little") + 1
+        height = int.from_bytes(data[27:30], "little") + 1
+        return width, height
+    if chunk == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
+        bits = int.from_bytes(data[21:25], "little")
+        width = (bits & 0x3FFF) + 1
+        height = ((bits >> 14) & 0x3FFF) + 1
+        return width, height
+    if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
+        width = int.from_bytes(data[26:28], "little") & 0x3FFF
+        height = int.from_bytes(data[28:30], "little") & 0x3FFF
+        if width > 0 and height > 0:
+            return width, height
+    raise ValueError("Could not read WebP dimensions")
+
+
+def next_page_image_index(conn: sqlite3.Connection, document_id: str, page_number: int) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(page_image_index), 0) + 1 AS next_index
+        FROM extracted_images
+        WHERE document_id = ? AND page_number = ?
+        """,
+        (document_id, page_number),
+    ).fetchone()
+    return int(row["next_index"] or 1)
+
+
+def upload_card_image(
+    conn: sqlite3.Connection,
+    card_id: object,
+    payload: dict,
+    *,
+    upload_root: Path = UPLOAD_MEDIA_ROOT,
+) -> dict:
+    card = require_card(conn, card_id)
+    content_type, ext = upload_content_type(payload)
+    data = decode_upload_data(payload.get("data_base64"))
+    width, height = image_dimensions(data, ext)
+    digest = hashlib.sha256(data).hexdigest()
+    document_id = str(card["document_id"])
+    page_number = int(card["source_page"])
+    target_dir = upload_root / slug_path_part(document_id) / f"page-{page_number}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{digest[:16]}.{ext}"
+    if not target_path.exists():
+        target_path.write_bytes(data)
+    file_path = media_file_path(target_path)
+
+    image_row = conn.execute(
+        """
+        SELECT *
+        FROM extracted_images
+        WHERE document_id = ? AND page_number = ? AND file_hash = ?
+        LIMIT 1
+        """,
+        (document_id, page_number, digest),
+    ).fetchone()
+    if image_row is None:
+        cursor = conn.execute(
+            """
+            INSERT INTO extracted_images
+                (
+                    document_id, page_number, page_image_index, xref, file_path,
+                    file_hash, ext, width, height, bbox_json
+                )
+            VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, '{}')
+            """,
+            (
+                document_id,
+                page_number,
+                next_page_image_index(conn, document_id, page_number),
+                file_path,
+                digest,
+                ext,
+                width,
+                height,
+            ),
+        )
+        image_id = int(cursor.lastrowid)
+    else:
+        image_id = int(image_row["id"])
+    card_payload = add_card_image(conn, int(card["id"]), image_id)
+    card_payload["uploaded_image"] = {
+        "image_id": image_id,
+        "content_type": content_type,
+        "file_path": file_path,
+        "width": width,
+        "height": height,
+    }
+    return card_payload
 
 
 def update_card(
@@ -776,7 +1152,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--open", action="store_true", help="Open the UI in your default browser.")
     return parser
+
+
+class FlashcardHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+def display_host(host: str) -> str:
+    return "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+
+
+def create_review_server(host: str, port: int) -> FlashcardHTTPServer:
+    last_error: OSError | None = None
+    for candidate_port in range(port, port + PORT_FALLBACK_ATTEMPTS):
+        try:
+            return FlashcardHTTPServer((host, candidate_port), ReviewServer)
+        except OSError as error:
+            last_error = error
+            is_busy = error.errno in {errno.EADDRINUSE, errno.EACCES}
+            is_windows_busy = getattr(error, "winerror", None) in {10013, 10048}
+            if is_busy or is_windows_busy:
+                continue
+            raise
+    raise OSError(
+        f"Could not start server on ports {port}-{port + PORT_FALLBACK_ATTEMPTS - 1}"
+    ) from last_error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -785,13 +1187,20 @@ def main(argv: list[str] | None = None) -> int:
     init_db(conn)
     conn.close()
 
-    server = ThreadingHTTPServer((args.host, args.port), ReviewServer)
+    server = create_review_server(args.host, args.port)
     server.db_path = args.db  # type: ignore[attr-defined]
-    print(f"Flashcard UI: http://{args.host}:{args.port}")
+    actual_port = int(server.server_address[1])
+    url = f"http://{display_host(args.host)}:{actual_port}"
+    if actual_port != args.port:
+        print(f"Port {args.port} is unavailable; using {actual_port} instead.", flush=True)
+    print(f"Flashcard UI: {url}", flush=True)
+    print("Keep this terminal open. Press Ctrl+C to stop the server.", flush=True)
+    if args.open:
+        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped")
+        print("\nStopped", flush=True)
     finally:
         server.server_close()
     return 0

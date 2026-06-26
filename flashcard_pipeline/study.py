@@ -13,6 +13,7 @@ DEFAULT_SESSION_SIZE = "all"
 MAX_SESSION_SIZE = 100
 VALID_RESULTS = {"correct", "wrong"}
 VALID_SOURCES = {"all", "favorites", "past_exams", "wrong", "chapter"}
+CARD_TYPE_ORDER = ("image", "multiple_choice", "short_answer")
 
 
 def normalize_limit(value: Any, default: Any = DEFAULT_SESSION_SIZE) -> int | None:
@@ -440,6 +441,15 @@ def sorted_chapter_rows(cards: list[dict]) -> list[dict]:
     return sorted(chapters.values(), key=chapter_key)
 
 
+def card_type_rows(cards: list[dict]) -> list[dict]:
+    counts = {card_type: 0 for card_type in CARD_TYPE_ORDER}
+    for card in cards:
+        card_type = str(card.get("type") or "")
+        if card_type in counts:
+            counts[card_type] += 1
+    return [{"type": card_type, "count": counts[card_type]} for card_type in CARD_TYPE_ORDER]
+
+
 def study_sections(conn: sqlite3.Connection) -> dict:
     cards = available_cards(conn)
     return {
@@ -447,6 +457,7 @@ def study_sections(conn: sqlite3.Connection) -> dict:
         "favorites": sum(1 for card in cards if card["review"]["favorite"]),
         "past_exams": sum(1 for card in cards if card["review"]["pastExam"]),
         "wrong": sum(1 for card in cards if card["review"]["lastResult"] == "wrong"),
+        "types": card_type_rows(cards),
         "chapters": sorted_chapter_rows(cards),
     }
 

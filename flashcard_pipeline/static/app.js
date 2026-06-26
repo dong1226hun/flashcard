@@ -175,7 +175,30 @@ function mediaItems(item) {
   return item.media && item.media.length ? item.media : item.images || [];
 }
 
-function renderImages(item, wrap) {
+function setSelectedImage(article, imageId) {
+  const selectedId = imageId ? String(imageId) : "";
+  article.dataset.selectedImageId = selectedId;
+  let selectedLabel = "";
+  article.querySelectorAll(".image-select").forEach((node) => {
+    const selected = node.dataset.imageId === selectedId;
+    node.classList.toggle("is-selected", selected);
+    node.setAttribute("aria-pressed", String(selected));
+    const checkbox = node.querySelector(".image-select-checkbox");
+    if (checkbox) checkbox.checked = selected;
+    if (selected) selectedLabel = node.dataset.imageLabel || "";
+  });
+  const status = article.querySelector(".selected-image-status");
+  if (status) status.textContent = selectedLabel || "선택된 그림 없음";
+  const remove = article.querySelector(".remove-image-button");
+  if (remove) remove.disabled = !selectedId;
+  const confirmRemove = article.querySelector(".confirm-image-delete");
+  if (confirmRemove) {
+    confirmRemove.classList.add("hidden");
+    confirmRemove.disabled = !selectedId;
+  }
+}
+
+function renderImages(item, wrap, options = {}) {
   const media = mediaItems(item);
   wrap.classList.toggle("multi", media.length > 1);
   for (const mediaItem of media) {
@@ -183,7 +206,36 @@ function renderImages(item, wrap) {
     image.loading = "lazy";
     image.src = mediaItem.src || mediaItem.image_url;
     image.alt = mediaItem.alt || `카드 이미지 ${item.source_page ? `${item.source_page}쪽` : ""}`;
-    wrap.appendChild(image);
+    if (!options.selectable) {
+      wrap.appendChild(image);
+      continue;
+    }
+    const imageId = String(mediaItem.image_id || "");
+    const imageButton = document.createElement("div");
+    imageButton.className = "image-select";
+    imageButton.dataset.imageId = imageId;
+    imageButton.dataset.imageLabel = `선택: ${mediaItem.page_image_index ? `그림 ${mediaItem.page_image_index}` : `이미지 ${imageId}`}`;
+    imageButton.tabIndex = 0;
+    imageButton.setAttribute("role", "button");
+    imageButton.setAttribute("aria-label", imageButton.dataset.imageLabel);
+    imageButton.setAttribute("aria-pressed", "false");
+    const selector = document.createElement("input");
+    selector.type = "checkbox";
+    selector.className = "image-select-checkbox";
+    selector.setAttribute("aria-label", `${imageButton.dataset.imageLabel} 선택`);
+    selector.addEventListener("click", (event) => event.stopPropagation());
+    selector.addEventListener("change", () => {
+      setSelectedImage(options.article, selector.checked ? imageId : "");
+    });
+    imageButton.append(image, selector);
+    imageButton.addEventListener("click", () => setSelectedImage(options.article, imageId));
+    imageButton.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setSelectedImage(options.article, imageId);
+      }
+    });
+    wrap.appendChild(imageButton);
   }
 }
 
@@ -195,11 +247,77 @@ function parseChoices(value) {
   return parsed;
 }
 
-function choiceIdsFromInput(value) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
+function choiceId(choice) {
+  return choice && choice.id !== undefined && choice.id !== null ? String(choice.id).trim() : "";
+}
+
+function choiceText(choice, index) {
+  if (choice && choice.text !== undefined && choice.text !== null) return String(choice.text);
+  if (choice && choice.label !== undefined && choice.label !== null) return String(choice.label);
+  return `선택지 ${index + 1}`;
+}
+
+function selectedChoiceIds(article) {
+  return Array.from(article.querySelectorAll(".correct-choice-option input:checked"))
+    .map((input) => input.value)
     .filter(Boolean);
+}
+
+function correctChoiceField(choicesControl, initialChoiceIds) {
+  const field = document.createElement("div");
+  field.className = "field correct-choice-field field-full";
+  field.dataset.visibleTypes = "multiple_choice";
+
+  const title = document.createElement("span");
+  title.className = "field-label";
+  title.textContent = "정답 선택";
+  const options = document.createElement("div");
+  options.className = "correct-choice-options";
+  field.append(title, options);
+
+  let selected = new Set((initialChoiceIds || []).map(String));
+  const syncFromChecked = () => {
+    selected = new Set(Array.from(options.querySelectorAll("input:checked")).map((input) => input.value));
+  };
+  const render = () => {
+    if (options.childElementCount) syncFromChecked();
+    options.replaceChildren();
+    let choices;
+    try {
+      choices = parseChoices(choicesControl.value);
+    } catch (error) {
+      const message = document.createElement("div");
+      message.className = "choice-helper";
+      message.textContent = "선택지 JSON을 먼저 올바르게 입력하세요";
+      options.appendChild(message);
+      return;
+    }
+    if (!choices.length) {
+      const message = document.createElement("div");
+      message.className = "choice-helper";
+      message.textContent = "선택지가 없습니다";
+      options.appendChild(message);
+      return;
+    }
+    choices.forEach((choice, index) => {
+      const id = choiceId(choice);
+      const label = document.createElement("label");
+      label.className = "correct-choice-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = id;
+      checkbox.checked = selected.has(id);
+      checkbox.disabled = !id;
+      checkbox.addEventListener("change", syncFromChecked);
+      const text = document.createElement("span");
+      text.textContent = id ? choiceText(choice, index) : `${choiceText(choice, index)} (id 없음)`;
+      label.append(checkbox, text);
+      options.appendChild(label);
+    });
+  };
+  choicesControl.addEventListener("input", render);
+  render();
+  return field;
 }
 
 function compactText(value) {
@@ -277,12 +395,17 @@ function ensureEditorOverlay() {
   return overlay;
 }
 
-function openEditor(item) {
+function renderEditorCard(item) {
   const overlay = ensureEditorOverlay();
   const title = overlay.querySelector(".editor-dialog-header h3");
   if (title) title.textContent = `#${item.card_id} 카드 수정`;
   const body = overlay.querySelector(".editor-dialog-body");
   body.replaceChildren(cardTemplate(item));
+  return overlay;
+}
+
+function openEditor(item) {
+  const overlay = renderEditorCard(item);
   overlay.classList.remove("hidden");
   document.body.classList.add("modal-open");
   const firstControl = overlay.querySelector(".card-type-select");
@@ -425,24 +548,43 @@ function cardTemplate(item) {
   article.className = "card-row";
   article.dataset.id = item.card_id;
   article.dataset.cardType = item.card_type || item.type || "image";
+  const media = mediaItems(item);
+  article.dataset.selectedImageId = "";
 
   const imagePane = document.createElement("div");
   imagePane.className = "image-pane";
   const imageWrap = document.createElement("div");
   imageWrap.className = "image-wrap";
-  renderImages(item, imageWrap);
-  const imageMeta = document.createElement("div");
-  imageMeta.className = "image-meta";
-  imageMeta.append(
-    badge(figureLabel(item)),
-    badge(item.source_page ? `${item.source_page}쪽` : "쪽 없음"),
-    badge(`이미지 ${item.image_count || 0}`),
-  );
-  const typeBadge = badge(cardTypeLabel(item.card_type || item.type), "card-type-badge");
-  imageMeta.appendChild(typeBadge);
-  if (item.is_favorite) imageMeta.appendChild(badge("즐겨찾기", "favorite"));
-  if (item.is_past_exam) imageMeta.appendChild(badge("기출", "past-exam"));
-  imagePane.append(imageWrap, imageMeta);
+  renderImages(item, imageWrap, { selectable: true, article });
+  const imageActions = document.createElement("div");
+  imageActions.className = "image-actions";
+  const selectedImageStatus = document.createElement("span");
+  selectedImageStatus.className = "selected-image-status";
+  selectedImageStatus.textContent = "선택된 그림 없음";
+  const addMenu = document.createElement("div");
+  addMenu.className = "image-add-menu";
+  const addImage = button("그림 추가", "secondary image-add-trigger");
+  const addPopover = document.createElement("div");
+  addPopover.className = "image-add-popover";
+  const upload = document.createElement("label");
+  upload.className = "image-menu-item upload-menu-item";
+  upload.textContent = "로컬에서 업로드";
+  const uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "image/png,image/jpeg,image/webp";
+  uploadInput.addEventListener("change", () => {
+    uploadImageFile(article, uploadInput.files?.[0]).catch((error) => showToast(error.message));
+  });
+  upload.appendChild(uploadInput);
+  const addExisting = button("기존 사진에서 추가", "image-menu-item");
+  addPopover.append(upload, addExisting);
+  addMenu.append(addImage, addPopover);
+  const removeImage = button("그림 삭제", "danger remove-image-button");
+  const confirmRemoveImage = button("삭제 확인", "danger confirm-image-delete hidden");
+  const imagePicker = document.createElement("div");
+  imagePicker.className = "image-picker hidden";
+  imageActions.append(selectedImageStatus, addMenu, removeImage, confirmRemoveImage);
+  imagePane.append(imageWrap, imageActions, imagePicker);
 
   const body = document.createElement("div");
   body.className = "card-body-panel";
@@ -488,7 +630,7 @@ function cardTemplate(item) {
   const answer = textarea(item.answer_text || item.answer?.text || "", "answer-text-input", 3);
   const explanation = textarea(item.answer_explanation || item.answer?.explanation || "", "answer-explanation-input", 3);
   const choices = textarea(item.choices_json || JSON.stringify(item.choices || [], null, 2), "choices-input", 5);
-  const answerChoiceIds = input((item.answer?.choiceIds || []).join(", "), "answer-choice-ids-input");
+  const correctChoices = correctChoiceField(choices, item.answer?.choiceIds || []);
   const sourceLabel = input(item.source_label || item.meta?.sourceLabel || "", "source-label-input");
   const chapter = input(item.chapter || item.meta?.chapter || "", "chapter-input");
   const sortOrder = input(String(item.sortOrder || 0), "sort-order-input");
@@ -507,10 +649,7 @@ function cardTemplate(item) {
       className: "choices-field field-full",
       types: ["multiple_choice"],
     }),
-    labelWithControl("정답 선택지 ID", answerChoiceIds, {
-      className: "choice-id-field",
-      types: ["multiple_choice"],
-    }),
+    correctChoices,
     labelWithControl("정답", answer, { className: "answer-field field-full" }),
     labelWithControl("해설", explanation, { className: "explanation-field field-full" }),
     labelWithControl("출처 라벨", sourceLabel, { className: "source-label-field" }),
@@ -576,10 +715,17 @@ function cardTemplate(item) {
     confirmRemove.focus();
   });
   confirmRemove.addEventListener("click", () => deleteCard(item).catch((error) => showToast(error.message)));
+  addExisting.addEventListener("click", () => toggleImagePicker(article, imagePicker).catch((error) => showToast(error.message)));
+  removeImage.addEventListener("click", () => {
+    confirmRemoveImage.classList.remove("hidden");
+    confirmRemoveImage.focus();
+  });
+  confirmRemoveImage.addEventListener("click", () => removeSelectedImage(article).catch((error) => showToast(error.message)));
 
   body.append(actions, typeControl, fields, advanced);
   article.append(imagePane, body);
   syncTypeFields(article);
+  setSelectedImage(article, article.dataset.selectedImageId);
   return article;
 }
 
@@ -631,6 +777,110 @@ async function exportStatic() {
   }
 }
 
+function pickerImageLabel(image) {
+  const page = image.page_number ? `${image.page_number}쪽` : "쪽 없음";
+  const index = image.page_image_index ? `그림 ${image.page_image_index}` : `이미지 ${image.image_id}`;
+  return `${page} · ${index}`;
+}
+
+function fileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const value = String(reader.result || "");
+      resolve(value.includes(",") ? value.split(",", 2)[1] : value);
+    });
+    reader.addEventListener("error", () => reject(new Error("파일을 읽지 못했습니다")));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function refreshEditorWithCard(card, message) {
+  renderEditorCard(card);
+  showToast(message);
+  await refresh();
+}
+
+async function addExistingImage(article, imageId) {
+  const cardId = Number(article.dataset.id);
+  const card = await fetchJson(`/api/cards/${cardId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ image_id: Number(imageId) }),
+  });
+  await refreshEditorWithCard(card, `#${cardId}에 그림을 추가했습니다`);
+}
+
+async function uploadImageFile(article, file) {
+  if (!file) return;
+  const cardId = Number(article.dataset.id);
+  const dataBase64 = await fileAsBase64(file);
+  const card = await fetchJson(`/api/cards/${cardId}/images/upload`, {
+    method: "POST",
+    body: JSON.stringify({
+      filename: file.name,
+      content_type: file.type,
+      data_base64: dataBase64,
+    }),
+  });
+  await refreshEditorWithCard(card, `#${cardId}에 그림을 업로드했습니다`);
+}
+
+function renderImagePicker(article, panel, images) {
+  panel.replaceChildren();
+
+  const title = document.createElement("div");
+  title.className = "image-picker-title";
+  title.textContent = "기존 그림 선택";
+
+  const grid = document.createElement("div");
+  grid.className = "image-picker-grid";
+  if (!images.length) {
+    const empty = document.createElement("div");
+    empty.className = "choice-helper";
+    empty.textContent = "추가할 수 있는 그림이 없습니다";
+    grid.appendChild(empty);
+  }
+  for (const image of images) {
+    const option = button("", "image-picker-option");
+    option.disabled = Boolean(image.is_attached);
+    option.title = image.is_attached ? "이미 현재 카드에 있습니다" : pickerImageLabel(image);
+    const thumb = document.createElement("img");
+    thumb.loading = "lazy";
+    thumb.src = image.src || image.image_url;
+    thumb.alt = pickerImageLabel(image);
+    const text = document.createElement("span");
+    text.textContent = image.is_attached ? `${pickerImageLabel(image)} · 추가됨` : pickerImageLabel(image);
+    option.append(thumb, text);
+    option.addEventListener("click", () => addExistingImage(article, image.image_id).catch((error) => showToast(error.message)));
+    grid.appendChild(option);
+  }
+
+  panel.append(title, grid);
+}
+
+async function toggleImagePicker(article, panel) {
+  if (!panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.textContent = "그림 목록을 불러오는 중...";
+  const cardId = Number(article.dataset.id);
+  const data = await fetchJson(`/api/images?card_id=${cardId}`);
+  renderImagePicker(article, panel, data.items || []);
+}
+
+async function removeSelectedImage(article) {
+  const cardId = Number(article.dataset.id);
+  const imageId = article.dataset.selectedImageId;
+  if (!imageId) {
+    showToast("삭제할 그림을 먼저 선택하세요");
+    return;
+  }
+  const card = await fetchJson(`/api/cards/${cardId}/images/${imageId}`, { method: "DELETE" });
+  await refreshEditorWithCard(card, `#${cardId}에서 그림을 제거했습니다`);
+}
+
 async function saveCard(article) {
   const id = Number(article.dataset.id);
   const cardType = article.querySelector(".card-type-select").value;
@@ -642,8 +892,7 @@ async function saveCard(article) {
     answer_text: article.querySelector(".answer-text-input").value,
     answer_explanation: article.querySelector(".answer-explanation-input").value,
     choices: cardType === "multiple_choice" ? parseChoices(article.querySelector(".choices-input").value) : [],
-    answer_choice_ids:
-      cardType === "multiple_choice" ? choiceIdsFromInput(article.querySelector(".answer-choice-ids-input").value) : [],
+    answer_choice_ids: cardType === "multiple_choice" ? selectedChoiceIds(article) : [],
     source_label: article.querySelector(".source-label-input").value,
     chapter: article.querySelector(".chapter-input").value,
     sort_order: Number(article.querySelector(".sort-order-input").value || 0),

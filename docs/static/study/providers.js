@@ -1,7 +1,8 @@
 const STATIC_DATA_URL = "./data/cards.json";
 const FAVORITES_STORAGE_KEY = "flashcard-template-favorites";
 const REVIEWS_STORAGE_KEY = "flashcard-template-reviews";
-const CARD_TYPES = new Set(["image", "multiple_choice", "short_answer"]);
+const CARD_TYPE_ORDER = ["image", "multiple_choice", "short_answer"];
+const CARD_TYPES = new Set(CARD_TYPE_ORDER);
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
@@ -98,6 +99,10 @@ function computeSections(cards) {
     favorites: cards.filter((card) => card.review.favorite).length,
     past_exams: cards.filter((card) => card.review.pastExam).length,
     wrong: cards.filter((card) => card.review.lastResult === "wrong").length,
+    types: CARD_TYPE_ORDER.map((type) => ({
+      type,
+      count: cards.filter((card) => card.type === type).length,
+    })),
     chapters: sortedChapterRows(cards),
   };
 }

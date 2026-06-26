@@ -1,10 +1,24 @@
 import json
+from pathlib import Path
+import shutil
 import sqlite3
 import unittest
+import uuid
 
 from flashcard_pipeline.db import init_db, table_columns
-from flashcard_pipeline.review_server import merge_cards, split_card, update_card
+from flashcard_pipeline.review_server import (
+    add_card_image,
+    list_available_images,
+    merge_cards,
+    remove_card_image,
+    split_card,
+    update_card,
+    upload_card_image,
+)
 from flashcard_pipeline.study import set_favorite, set_past_exam
+
+
+ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lw9JzgAAAABJRU5ErkJggg=="
 
 
 def make_current_conn():
@@ -190,6 +204,77 @@ class ReviewFlowTests(unittest.TestCase):
         self.assertEqual(row["notes"], "reviewed")
         self.assertEqual(payload["type"], "multiple_choice")
         self.assertEqual(payload["answer"]["choiceIds"], ["b"])
+        conn.close()
+
+    def test_list_available_images_marks_attached_images(self):
+        conn = make_current_conn()
+
+        payload = list_available_images(conn, 1)
+
+        attached_by_id = {item["image_id"]: item["is_attached"] for item in payload["items"]}
+        self.assertTrue(attached_by_id[1])
+        self.assertFalse(attached_by_id[2])
+        conn.close()
+
+    def test_add_card_image_links_existing_image_without_duplicates(self):
+        conn = make_current_conn()
+
+        payload = add_card_image(conn, 1, 2)
+        add_card_image(conn, 1, 2)
+
+        self.assertEqual(payload["image_count"], 2)
+        self.assertEqual(len(payload["images"]), 2)
+        self.assertEqual(
+            conn.execute(
+                "SELECT COUNT(*) FROM card_images WHERE card_id = 1 AND image_id = 2",
+            ).fetchone()[0],
+            1,
+        )
+        conn.close()
+
+    def test_remove_card_image_only_removes_card_link(self):
+        conn = make_current_conn()
+
+        payload = remove_card_image(conn, 1, 1)
+
+        self.assertEqual(payload["image_count"] or 0, 0)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM card_images WHERE card_id = 1").fetchone()[0], 0)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM extracted_images WHERE id = 1").fetchone()[0], 1)
+        conn.close()
+
+    def test_upload_card_image_creates_image_record_and_link(self):
+        conn = make_current_conn()
+        upload_root = Path("data") / "media" / "generated" / "test-uploads" / f"review-flow-{uuid.uuid4().hex}"
+        self.addCleanup(lambda: shutil.rmtree(upload_root.parent, ignore_errors=True))
+
+        payload = upload_card_image(
+            conn,
+            1,
+            {
+                "filename": "pixel.png",
+                "content_type": "image/png",
+                "data_base64": ONE_PIXEL_PNG,
+            },
+            upload_root=upload_root,
+        )
+
+        uploaded = payload["uploaded_image"]
+        image_id = uploaded["image_id"]
+        row = conn.execute("SELECT * FROM extracted_images WHERE id = ?", (image_id,)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["document_id"], "doc1")
+        self.assertEqual(row["page_number"], 1)
+        self.assertEqual(row["xref"], 0)
+        self.assertEqual(row["width"], 1)
+        self.assertEqual(row["height"], 1)
+        self.assertTrue(Path(row["file_path"]).exists())
+        self.assertEqual(
+            conn.execute(
+                "SELECT COUNT(*) FROM card_images WHERE card_id = 1 AND image_id = ?",
+                (image_id,),
+            ).fetchone()[0],
+            1,
+        )
         conn.close()
 
 
