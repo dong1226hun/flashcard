@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .answer_fields import answer_fields_from_caption, answer_is_caption_derived
 from .caption_labels import FIGURE_TAG_RE, apply_panel_labels
-from .db import DEFAULT_DB_PATH, connect, init_db
+from .db import DEFAULT_DB_PATH, connect, figure_metadata, init_db
 
 
 @dataclass(frozen=True)
@@ -219,23 +220,44 @@ def apply_caption_repairs(
 ) -> dict:
     repairs = propose_caption_repairs(conn, document_id=document_id)
     for repair in repairs:
+        chapter, source_label, sort_order = figure_metadata(repair.new_caption)
         row = conn.execute(
-            "SELECT notes FROM cards WHERE id = ?",
+            "SELECT caption_text, answer_text, answer_explanation, notes FROM cards WHERE id = ?",
             (repair.card_id,),
         ).fetchone()
         notes = append_repair_note(row["notes"] if row else "", repair)
+        fields = answer_fields_from_caption(repair.new_caption)
+        should_update_answer = row is None or answer_is_caption_derived(row["answer_text"], row["caption_text"])
         conn.execute(
             """
             UPDATE cards
             SET
                 caption_text = ?,
+                answer_text = CASE WHEN ? THEN ? ELSE answer_text END,
+                answer_explanation = CASE WHEN ? THEN ? ELSE answer_explanation END,
+                chapter = ?,
+                source_label = ?,
+                sort_order = CASE WHEN ? = 0 THEN sort_order ELSE ? END,
                 caption_block_id = ?,
                 confidence = MAX(confidence, 0.95),
                 notes = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (repair.new_caption, repair.caption_block_id, notes, repair.card_id),
+            (
+                repair.new_caption,
+                1 if should_update_answer else 0,
+                fields.answer_text,
+                1 if should_update_answer else 0,
+                fields.answer_explanation,
+                chapter,
+                source_label,
+                sort_order,
+                sort_order,
+                repair.caption_block_id,
+                notes,
+                repair.card_id,
+            ),
         )
 
     conn.commit()

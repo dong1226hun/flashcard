@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import unittest
 
@@ -10,7 +11,6 @@ from flashcard_pipeline.study import (
     record_review,
     set_favorite,
     set_past_exam,
-    split_answer_caption,
     study_sections,
     study_summary,
 )
@@ -36,7 +36,7 @@ def make_conn():
                 )
             VALUES ('doc1', ?, ?, ?, ?, ?, 'png', 200, 120, '{}')
             """,
-            (index, index, index, f"assets/image-{index}.png", f"imagehash-{index}"),
+            (index, index, index, f"data/media/pdf/doc1/page-{index}/image-{index}.png", f"imagehash-{index}"),
         )
         image_id = conn.execute(
             "SELECT id FROM extracted_images WHERE file_hash = ?",
@@ -44,10 +44,24 @@ def make_conn():
         ).fetchone()["id"]
         cursor = conn.execute(
             """
-            INSERT INTO cards (document_id, source_page, caption_text, confidence)
-            VALUES ('doc1', ?, ?, 1.0)
+            INSERT INTO cards
+                (
+                    document_id, source_page, caption_text, card_type, prompt_text,
+                    answer_text, answer_explanation, chapter, source_label,
+                    sort_order, confidence
+                )
+            VALUES ('doc1', ?, ?, 'image', ?, ?, ?, ?, ?, ?, 1.0)
             """,
-            (index, f"Figure {index}-1. Caption"),
+            (
+                index,
+                f"Figure {index}-1. Source caption {index}",
+                f"Prompt {index}",
+                f"Answer {index}",
+                f"Explanation {index}",
+                str(index),
+                f"Fig. {index}-1.",
+                index,
+            ),
         )
         card_id = int(cursor.lastrowid)
         conn.execute(
@@ -55,20 +69,67 @@ def make_conn():
             INSERT INTO card_images (card_id, image_id, sort_order, source_caption_text)
             VALUES (?, ?, 0, ?)
             """,
-            (card_id, image_id, f"Figure {index}-1. Caption"),
+            (card_id, image_id, f"Figure {index}-1. Source caption {index}"),
         )
     conn.commit()
     return conn
 
 
 class StudyTests(unittest.TestCase):
-    def test_create_session_uses_all_cards(self):
+    def test_create_session_uses_all_cards_with_template_schema(self):
         conn = make_conn()
 
         session = create_session(conn, requested_count=10)
 
         self.assertEqual(session["card_count"], 4)
         self.assertEqual([card["card_id"] for card in session["cards"]], [1, 2, 3, 4])
+        first = session["cards"][0]
+        self.assertEqual(first["type"], "image")
+        self.assertEqual(first["prompt"], {"text": "Prompt 1"})
+        self.assertEqual(first["answer"]["text"], "Answer 1")
+        self.assertEqual(first["answer"]["explanation"], "Explanation 1")
+        self.assertEqual(first["meta"]["chapter"], "1")
+        self.assertEqual(first["media"][0]["src"], "/media/pdf/doc1/page-1/image-1.png")
+        self.assertNotIn("file_path", first["media"][0])
+        conn.close()
+
+    def test_create_session_supports_non_image_card_types(self):
+        conn = make_conn()
+        conn.execute(
+            """
+            INSERT INTO cards
+                (
+                    document_id, source_page, caption_text, card_type, prompt_text,
+                    answer_text, choices_json, answer_choice_ids_json, chapter,
+                    source_label, sort_order, confidence
+                )
+            VALUES ('doc1', 10, '', 'multiple_choice', ?, ?, ?, ?, 'quiz', 'Quiz 1', 10, 1.0)
+            """,
+            (
+                "Pick the correct option.",
+                "Option B",
+                json.dumps([{"id": "a", "text": "Option A"}, {"id": "b", "text": "Option B"}]),
+                json.dumps(["b"]),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO cards
+                (
+                    document_id, source_page, caption_text, card_type, prompt_text,
+                    answer_text, chapter, source_label, sort_order, confidence
+                )
+            VALUES ('doc1', 11, '', 'short_answer', 'Define the term.', 'Definition', 'quiz', 'Quiz 2', 11, 1.0)
+            """
+        )
+        conn.commit()
+
+        session = create_session(conn, requested_count="all", source="chapter", chapter="quiz")
+
+        self.assertEqual([card["type"] for card in session["cards"]], ["multiple_choice", "short_answer"])
+        self.assertEqual(session["cards"][0]["choices"][1]["id"], "b")
+        self.assertEqual(session["cards"][0]["answer"]["choiceIds"], ["b"])
+        self.assertEqual(session["cards"][1]["media"], [])
         conn.close()
 
     def test_create_session_can_filter_favorites(self):
@@ -79,7 +140,7 @@ class StudyTests(unittest.TestCase):
 
         self.assertEqual(session["card_count"], 1)
         self.assertEqual(session["cards"][0]["card_id"], 2)
-        self.assertTrue(session["cards"][0]["is_favorite"])
+        self.assertTrue(session["cards"][0]["review"]["favorite"])
         conn.close()
 
     def test_create_session_can_filter_past_exams(self):
@@ -90,7 +151,7 @@ class StudyTests(unittest.TestCase):
 
         self.assertEqual(session["card_count"], 1)
         self.assertEqual(session["cards"][0]["card_id"], 3)
-        self.assertTrue(session["cards"][0]["is_past_exam"])
+        self.assertTrue(session["cards"][0]["review"]["pastExam"])
         conn.close()
 
     def test_create_session_can_filter_latest_wrong_cards(self):
@@ -98,31 +159,16 @@ class StudyTests(unittest.TestCase):
         first = create_session(conn, requested_count=2)
         wrong_card_id = first["cards"][0]["card_id"]
         corrected_card_id = first["cards"][1]["card_id"]
-        record_review(
-            conn,
-            session_id=first["session_id"],
-            card_id=wrong_card_id,
-            result="wrong",
-        )
-        record_review(
-            conn,
-            session_id=first["session_id"],
-            card_id=corrected_card_id,
-            result="wrong",
-        )
+        record_review(conn, session_id=first["session_id"], card_id=wrong_card_id, result="wrong")
+        record_review(conn, session_id=first["session_id"], card_id=corrected_card_id, result="wrong")
         second = create_session(conn, requested_count=1)
-        record_review(
-            conn,
-            session_id=second["session_id"],
-            card_id=corrected_card_id,
-            result="correct",
-        )
+        record_review(conn, session_id=second["session_id"], card_id=corrected_card_id, result="correct")
 
         session = create_session(conn, requested_count=10, source="wrong")
 
         self.assertEqual(session["card_count"], 1)
         self.assertEqual(session["cards"][0]["card_id"], wrong_card_id)
-        self.assertEqual(session["cards"][0]["last_review_result"], "wrong")
+        self.assertEqual(session["cards"][0]["review"]["lastResult"], "wrong")
         conn.close()
 
     def test_create_session_can_filter_chapter_with_all_cards(self):
@@ -131,88 +177,57 @@ class StudyTests(unittest.TestCase):
         session = create_session(conn, requested_count="all", source="chapter", chapter="2")
 
         self.assertEqual(session["card_count"], 1)
-        self.assertEqual(session["cards"][0]["chapter"], "2")
+        self.assertEqual(session["cards"][0]["meta"]["chapter"], "2")
+        conn.close()
+
+    def test_create_session_can_combine_frontend_filters(self):
+        conn = make_conn()
+        conn.execute(
+            """
+            UPDATE cards
+            SET card_type = 'multiple_choice', prompt_text = 'Find the target lesion'
+            WHERE id = 3
+            """
+        )
+        conn.commit()
+
+        session = create_session(
+            conn,
+            requested_count="all",
+            chapter="3",
+            card_type="multiple_choice",
+            q="target",
+        )
+
+        self.assertEqual(session["card_count"], 1)
+        self.assertEqual(session["cards"][0]["card_id"], 3)
+        self.assertEqual(session["cards"][0]["type"], "multiple_choice")
         conn.close()
 
     def test_session_limit_defaults_to_all_cards(self):
         self.assertIsNone(normalize_limit(None))
         self.assertIsNone(normalize_limit("not-a-number"))
 
-    def test_split_answer_caption_uses_title_like_disease_name(self):
-        result = split_answer_caption("그림 16-4A. 인접면우식증. A, 제2대구치 원심면의 초기우식.")
-
-        self.assertEqual(result["answer_title"], "인접면우식증")
-        self.assertEqual(result["answer_detail"], "A, 제2대구치 원심면의 초기우식.")
-
-    def test_split_answer_caption_uses_first_caption_sentence_as_title(self):
-        result = split_answer_caption(
-            "그림 16-2A. 교익방사선영상. A, B는 같은 환자의 영상으로 B는 A를 부분 확대한 것이다. "
-            "상악 제1대구치의 근심면과 하악 제1대구치 원심면에서 인접면우식이 관찰된다."
-        )
-
-        self.assertEqual(result["answer_title"], "교익방사선영상")
-        self.assertEqual(
-            result["answer_detail"],
-            "A, B는 같은 환자의 영상으로 B는 A를 부분 확대한 것이다. "
-            "상악 제1대구치의 근심면과 하악 제1대구치 원심면에서 인접면우식이 관찰된다.",
-        )
-
-    def test_split_answer_caption_cleans_panel_range_from_title(self):
-        result = split_answer_caption(
-            "그림 20-5A. A~D, 골경화증. 비교적 경계가 명확한 방사선불투과성 부위로 관찰된다."
-        )
-
-        self.assertEqual(result["answer_title"], "골경화증")
-        self.assertEqual(result["answer_detail"], "비교적 경계가 명확한 방사선불투과성 부위로 관찰된다.")
-
-    def test_split_answer_caption_does_not_promote_panel_sentence(self):
-        result = split_answer_caption(
-            "그림 16-13A. A의 제1유구치는 치수노출이 확실하다고 할 수 있으나 B의 제1유구치는 임상적인 확인이 필요하다."
-        )
-
-        self.assertEqual(result["answer_title"], "")
-        self.assertEqual(
-            result["answer_detail"],
-            "A의 제1유구치는 치수노출이 확실하다고 할 수 있으나 B의 제1유구치는 임상적인 확인이 필요하다.",
-        )
-
-    def test_create_session_orders_by_figure_number_before_page_order(self):
+    def test_create_session_orders_by_explicit_sort_order(self):
         conn = make_conn()
-        updates = [
-            ("Figure 16-8A. Later figure.", 9, 1),
-            ("Figure 16-7A. Earlier figure.", 9, 2),
-            ("Figure 16-8B. Later figure panel B.", 8, 3),
-            ("Figure 16-9. Latest figure.", 10, 4),
-        ]
-        for caption, source_page, card_id in updates:
-            conn.execute(
-                """
-                UPDATE cards
-                SET caption_text = ?, source_page = ?
-                WHERE id = ?
-                """,
-                (caption, source_page, card_id),
-            )
+        updates = [(30, 1), (10, 2), (20, 3), (40, 4)]
+        for sort_order, card_id in updates:
+            conn.execute("UPDATE cards SET sort_order = ? WHERE id = ?", (sort_order, card_id))
         conn.commit()
 
         session = create_session(conn, requested_count="all")
 
-        self.assertEqual(
-            [card["caption_text"] for card in session["cards"][:3]],
-            [
-                "Figure 16-7A. Earlier figure.",
-                "Figure 16-8A. Later figure.",
-                "Figure 16-8B. Later figure panel B.",
-            ],
-        )
+        self.assertEqual([card["card_id"] for card in session["cards"]], [2, 3, 1, 4])
         conn.close()
 
-    def test_apply_panel_labels_uses_current_image_order(self):
+    def test_apply_panel_labels_updates_caption_and_template_answer_when_unedited(self):
         conn = make_conn()
         conn.execute(
             """
             UPDATE cards
-            SET caption_text = 'Figure 16-1. Shared caption'
+            SET
+                caption_text = 'Figure 16-1. Shared caption',
+                answer_text = 'Figure 16-1. Shared caption'
             WHERE source_page IN (1, 2)
             """
         )
@@ -222,7 +237,7 @@ class StudyTests(unittest.TestCase):
 
         rows = conn.execute(
             """
-            SELECT caption_text
+            SELECT caption_text, answer_text, answer_explanation, source_label
             FROM cards
             WHERE source_page IN (1, 2)
             ORDER BY source_page, id
@@ -230,32 +245,26 @@ class StudyTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(result["updated_cards"], 2)
         self.assertEqual(rows[0]["caption_text"], "Figure 16-1A. Shared caption")
+        self.assertEqual(rows[0]["answer_text"], "Shared caption")
+        self.assertEqual(rows[0]["answer_explanation"], "")
+        self.assertEqual(rows[0]["source_label"], "Fig. 16-1A.")
         self.assertEqual(rows[1]["caption_text"], "Figure 16-1B. Shared caption")
         conn.close()
 
-    def test_apply_panel_labels_removes_direct_duplicate_panel_marker(self):
+    def test_known_chapter_title_has_template_default(self):
+        self.assertEqual(chapter_title("16"), "단원 16")
+        self.assertEqual(chapter_title("Unknown"), "")
+
+    def test_record_review_creates_review_row(self):
         conn = make_conn()
-        conn.execute(
-            """
-            UPDATE cards
-            SET caption_text = 'Figure 16-13. A, first panel. B, second panel.'
-            WHERE source_page IN (1, 2)
-            """
-        )
-        conn.commit()
+        session = create_session(conn, requested_count=1)
+        card_id = session["cards"][0]["card_id"]
 
-        apply_panel_labels(conn)
+        result = record_review(conn, session_id=session["session_id"], card_id=card_id, result="correct")
 
-        rows = conn.execute(
-            """
-            SELECT caption_text
-            FROM cards
-            WHERE source_page IN (1, 2)
-            ORDER BY source_page, id
-            """
-        ).fetchall()
-        self.assertEqual(rows[0]["caption_text"], "Figure 16-13A. first panel.")
-        self.assertEqual(rows[1]["caption_text"], "Figure 16-13B. second panel.")
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["reviewed_count"], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM study_reviews").fetchone()[0], 1)
         conn.close()
 
     def test_study_sections_counts_all_favorites_past_exams_and_chapters(self):
@@ -275,43 +284,12 @@ class StudyTests(unittest.TestCase):
         )
         conn.close()
 
-    def test_known_chapter_titles_match_textbook(self):
-        self.assertEqual(chapter_title("16"), "치아우식증의 영상진단")
-        self.assertEqual(chapter_title("28"), "구강악안면부 외상의 진단")
-
-    def test_record_review_creates_review_row(self):
-        conn = make_conn()
-        session = create_session(conn, requested_count=1)
-        card_id = session["cards"][0]["card_id"]
-
-        result = record_review(
-            conn,
-            session_id=session["session_id"],
-            card_id=card_id,
-            result="correct",
-        )
-
-        self.assertTrue(result["completed"])
-        self.assertEqual(result["reviewed_count"], 1)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM study_reviews").fetchone()[0], 1)
-        conn.close()
-
     def test_study_summary_counts_results(self):
         conn = make_conn()
         session = create_session(conn, requested_count=2)
         set_past_exam(conn, card_id=session["cards"][0]["card_id"], past_exam=True)
-        record_review(
-            conn,
-            session_id=session["session_id"],
-            card_id=session["cards"][0]["card_id"],
-            result="correct",
-        )
-        record_review(
-            conn,
-            session_id=session["session_id"],
-            card_id=session["cards"][1]["card_id"],
-            result="wrong",
-        )
+        record_review(conn, session_id=session["session_id"], card_id=session["cards"][0]["card_id"], result="correct")
+        record_review(conn, session_id=session["session_id"], card_id=session["cards"][1]["card_id"], result="wrong")
 
         summary = study_summary(conn)
 
@@ -321,7 +299,7 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(summary["reviewed_cards"], 2)
         self.assertEqual(summary["correct"], 1)
         self.assertEqual(summary["wrong"], 1)
-        self.assertEqual(summary["unsure"], 0)
+        self.assertNotIn("unsure", summary)
         conn.close()
 
 

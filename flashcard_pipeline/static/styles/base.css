@@ -1,0 +1,16 @@
+@import url("./tokens.css?v=2");
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.hidden {
+  display: none !important;
+}

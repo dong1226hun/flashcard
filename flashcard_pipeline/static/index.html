@@ -3,29 +3,39 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>영상치의학 Flashcards</title>
+    <title>영상치의학 flashcard</title>
     <script>
       (() => {
         try {
-          document.documentElement.dataset.theme = localStorage.getItem("flashcard-theme") || "dark";
+          const theme = localStorage.getItem("flashcard-theme") === "dark" ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
         } catch {
-          document.documentElement.dataset.theme = "dark";
+          document.documentElement.dataset.theme = "light";
+          document.documentElement.style.colorScheme = "light";
         }
       })();
     </script>
-    <link rel="stylesheet" href="/static/exam.css?v=18" />
+    <link rel="stylesheet" href="/static/styles/study.css?v=8" />
   </head>
   <body>
     <div class="app">
       <header class="topbar">
         <div>
-          <h1>영상치의학 Flashcards</h1>
+          <h1>영상치의학 flashcard</h1>
         </div>
-        <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="true" aria-label="테마 전환">
+        <button
+          id="theme-toggle"
+          class="theme-toggle"
+          type="button"
+          role="switch"
+          aria-checked="false"
+          aria-label="테마 전환"
+        >
           <span class="theme-toggle-track" aria-hidden="true">
             <span class="theme-toggle-thumb"></span>
           </span>
-          <span class="theme-toggle-text">Dark</span>
+          <span class="theme-toggle-text">Light</span>
         </button>
       </header>
 
@@ -33,39 +43,63 @@
         <section class="study">
           <div class="deckbar">
             <button class="deck-tab active" data-source="all">
-              전체 문제 <strong id="section-all">0</strong>
+              전체 <strong id="section-all">0</strong>
             </button>
             <button class="deck-tab" data-source="favorites">
               즐겨찾기 <strong id="section-favorites">0</strong>
             </button>
             <button class="deck-tab" data-source="past_exams">
-              기출문제 <strong id="section-past-exams">0</strong>
+              기출 <strong id="section-past-exams">0</strong>
             </button>
             <button class="deck-tab" data-source="wrong">
-              틀린 문제 <strong id="section-wrong">0</strong>
+              오답 <strong id="section-wrong">0</strong>
             </button>
-            <label class="chapter-picker">
-              단원별 문제
-              <select id="chapter-select"></select>
-            </label>
+          </div>
+
+          <div class="study-filterbar" aria-label="학습 필터">
+            <input id="study-query" class="filter-control search-filter" type="search" aria-label="검색" placeholder="검색: 질환명, 출처, ..." />
+            <select id="type-select" class="filter-control type-picker" aria-label="문제유형">
+              <option value="">문제유형</option>
+              <option value="image">이미지</option>
+              <option value="multiple_choice">객관식</option>
+              <option value="short_answer">주관식</option>
+            </select>
+            <select id="chapter-select" class="filter-control chapter-picker" aria-label="단원명"></select>
           </div>
 
           <div class="toolbar">
-            <button id="new-session" class="btn primary">순서대로 정렬</button>
-            <button id="shuffle-session" class="btn">Shuffle</button>
+            <button id="new-session" class="btn primary">순서대로</button>
+            <button id="shuffle-session" class="btn">섞기</button>
             <button id="favorite-card" class="btn favorite">즐겨찾기</button>
           </div>
 
           <div class="empty hidden" id="empty-state">
-            출제 가능한 카드가 없습니다.
+            조건에 맞는 카드가 없습니다.
           </div>
 
           <article class="card-shell" id="card-shell">
             <div class="card-body">
               <div class="image-stage">
                 <div class="card-number" id="card-number">1</div>
-                <div class="image-frame" id="image-frame" role="button" tabindex="0" aria-label="정답 보기">
-                  <div id="card-images" class="card-images" aria-label="Flashcard images"></div>
+                <div
+                  class="image-frame"
+                  id="image-frame"
+                  role="button"
+                  tabindex="0"
+                  aria-label="정답 보기"
+                >
+                  <div id="question-face" class="question-face">
+                    <div id="question-type" class="question-type"></div>
+                    <div id="question-prompt" class="question-prompt"></div>
+                    <div id="card-images" class="card-images" aria-label="카드 이미지"></div>
+                    <div id="choice-list" class="choice-list"></div>
+                    <textarea
+                      id="short-answer-input"
+                      class="short-answer-input"
+                      rows="4"
+                      placeholder="답안을 입력해보세요"
+                    ></textarea>
+                  </div>
                   <div class="answer-face" id="answer-face">
                     <div class="answer-meta" id="answer-meta"></div>
                     <div class="answer-title" id="answer-title"></div>
@@ -79,7 +113,7 @@
               <button id="prev-card" class="btn ghost">이전</button>
               <button id="reveal-answer" class="btn primary">정답 <span class="kbd">Space</span></button>
               <button id="next-card" class="btn ghost">다음</button>
-              <button id="correct-card" class="btn correct">맞춤</button>
+              <button id="correct-card" class="btn correct">맞음</button>
               <button id="wrong-card" class="btn wrong">틀림</button>
             </div>
           </article>
@@ -88,12 +122,11 @@
         <aside>
           <div class="side-card">
             <div class="side-head">
-              <p class="side-title">Session Navigator</p>
+              <p class="side-title">세션 탐색</p>
               <div class="progress"><div id="progress-bar"></div></div>
               <p class="hint">
                 <span class="kbd">Space</span> 정답
-                <span class="kbd">←</span>/<span class="kbd">→</span> 이동
-                이미지 클릭 정답
+                <span class="kbd">Left</span>/<span class="kbd">Right</span> 이동
               </p>
             </div>
             <div class="list" id="card-list"></div>
@@ -103,6 +136,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/exam.js?v=16"></script>
+    <script type="module" src="/static/study/main.js?v=4" data-provider="api"></script>
   </body>
 </html>

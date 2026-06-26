@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
 
+from .answer_fields import answer_fields_from_caption, answer_is_caption_derived, strip_leading_figure_label
+
 
 DEFAULT_DB_PATH = Path("data") / "flashcards.sqlite"
+
+CARD_TYPES = {"image", "multiple_choice", "short_answer"}
+LEGACY_DEFAULT_PROMPT = "Study the prompt and recall the answer."
+DASHES = r"\-\u2010\u2011\u2012\u2013\u2014\u2015\uff0d"
+FIGURE_TAG_RE = re.compile(
+    rf"(?:\uadf8\ub9bc|Fig\.?|Figure)\s*"
+    rf"(?P<chapter>\d+)\s*[{DASHES}]\s*(?P<figure>\d+)"
+    rf"(?P<label>[A-Za-z])?",
+    re.IGNORECASE,
+)
 
 
 SCHEMA = """
@@ -73,6 +86,16 @@ CREATE TABLE IF NOT EXISTS cards (
     caption_block_id INTEGER REFERENCES extracted_text_blocks(id) ON DELETE SET NULL,
     source_page INTEGER NOT NULL,
     caption_text TEXT NOT NULL DEFAULT '',
+    card_type TEXT NOT NULL DEFAULT 'image'
+        CHECK(card_type IN ('image', 'multiple_choice', 'short_answer')),
+    prompt_text TEXT NOT NULL DEFAULT '',
+    answer_text TEXT NOT NULL DEFAULT '',
+    answer_explanation TEXT NOT NULL DEFAULT '',
+    choices_json TEXT NOT NULL DEFAULT '[]',
+    answer_choice_ids_json TEXT NOT NULL DEFAULT '[]',
+    chapter TEXT NOT NULL DEFAULT 'Unknown',
+    source_label TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     confidence REAL NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -111,7 +134,7 @@ CREATE TABLE IF NOT EXISTS study_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES study_sessions(id) ON DELETE CASCADE,
     card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    result TEXT NOT NULL CHECK(result IN ('correct', 'wrong', 'unsure')),
+    result TEXT NOT NULL CHECK(result IN ('correct', 'wrong')),
     reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -131,6 +154,19 @@ CREATE TABLE IF NOT EXISTS study_past_exams (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
+
+
+CARD_COLUMN_ALTERS = {
+    "card_type": "ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'image'",
+    "prompt_text": "ALTER TABLE cards ADD COLUMN prompt_text TEXT NOT NULL DEFAULT ''",
+    "answer_text": "ALTER TABLE cards ADD COLUMN answer_text TEXT NOT NULL DEFAULT ''",
+    "answer_explanation": "ALTER TABLE cards ADD COLUMN answer_explanation TEXT NOT NULL DEFAULT ''",
+    "choices_json": "ALTER TABLE cards ADD COLUMN choices_json TEXT NOT NULL DEFAULT '[]'",
+    "answer_choice_ids_json": "ALTER TABLE cards ADD COLUMN answer_choice_ids_json TEXT NOT NULL DEFAULT '[]'",
+    "chapter": "ALTER TABLE cards ADD COLUMN chapter TEXT NOT NULL DEFAULT 'Unknown'",
+    "source_label": "ALTER TABLE cards ADD COLUMN source_label TEXT NOT NULL DEFAULT ''",
+    "sort_order": "ALTER TABLE cards ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+}
 
 
 def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -167,223 +203,156 @@ def append_note(current_notes: str, addition: str) -> str:
     return f"{current_notes}; {addition}" if current_notes else addition
 
 
-def legacy_merge_target(notes: str) -> int | None:
-    match = re.search(r"merged_pdf_figure_into=(\d+)", notes or "")
-    return int(match.group(1)) if match else None
-
-
 def create_core_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
 
 
-def rename_legacy_study_tables(conn: sqlite3.Connection) -> dict[str, str]:
-    renamed: dict[str, str] = {}
-    for table in ("study_favorites", "study_past_exams", "study_reviews"):
-        if "candidate_id" not in table_columns(conn, table):
-            continue
-        legacy_name = f"{table}_legacy"
-        conn.execute(f"DROP TABLE IF EXISTS {legacy_name}")
-        conn.execute(f"ALTER TABLE {table} RENAME TO {legacy_name}")
-        renamed[table] = legacy_name
-    return renamed
+def normalize_json_array(value: object) -> str:
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = []
+    elif isinstance(value, list):
+        parsed = value
+    else:
+        parsed = []
+    return json.dumps(parsed if isinstance(parsed, list) else [], ensure_ascii=False)
 
 
-def copy_legacy_study_tables(conn: sqlite3.Connection, legacy_tables: dict[str, str]) -> None:
-    favorites = legacy_tables.get("study_favorites")
-    if favorites and table_exists(conn, favorites):
-        conn.execute(
-            f"""
-            INSERT OR IGNORE INTO study_favorites (card_id, created_at)
-            SELECT candidate_id, created_at
-            FROM {favorites}
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute(f"DROP TABLE {favorites}")
-
-    past_exams = legacy_tables.get("study_past_exams")
-    if past_exams and table_exists(conn, past_exams):
-        conn.execute(
-            f"""
-            INSERT OR IGNORE INTO study_past_exams (card_id, created_at)
-            SELECT candidate_id, created_at
-            FROM {past_exams}
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute(f"DROP TABLE {past_exams}")
-
-    reviews = legacy_tables.get("study_reviews")
-    if reviews and table_exists(conn, reviews):
-        conn.execute(
-            f"""
-            INSERT INTO study_reviews (id, session_id, card_id, result, reviewed_at)
-            SELECT id, session_id, candidate_id, result, reviewed_at
-            FROM {reviews}
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute(f"DROP TABLE {reviews}")
+def figure_metadata(caption: str) -> tuple[str, str, int]:
+    match = FIGURE_TAG_RE.search(caption or "")
+    if not match:
+        return "Unknown", "", 0
+    chapter = match.group("chapter")
+    figure = match.group("figure")
+    label = (match.group("label") or "").upper()
+    panel_order = ord(label) - ord("A") + 1 if label else 0
+    source_label = f"Fig. {chapter}-{figure}{label}."
+    sort_order = int(chapter) * 1_000_000 + int(figure) * 1_000 + panel_order
+    return chapter, source_label, sort_order
 
 
-def migrate_legacy_schema(conn: sqlite3.Connection) -> None:
-    if not table_exists(conn, "card_candidates") or table_exists(conn, "cards"):
+def fallback_sort_order(source_page: object, card_id: object) -> int:
+    try:
+        page = int(source_page or 0)
+    except (TypeError, ValueError):
+        page = 0
+    try:
+        ident = int(card_id or 0)
+    except (TypeError, ValueError):
+        ident = 0
+    return page * 10_000 + ident
+
+
+def migrate_card_template_fields(conn: sqlite3.Connection) -> None:
+    if not table_exists(conn, "cards"):
         return
 
-    conn.execute("PRAGMA foreign_keys = OFF")
-    legacy_study_tables = rename_legacy_study_tables(conn)
-    create_core_schema(conn)
+    columns = table_columns(conn, "cards")
+    for name, statement in CARD_COLUMN_ALTERS.items():
+        if name not in columns:
+            conn.execute(statement)
 
-    active_rows = conn.execute(
+    rows = conn.execute(
         """
-        SELECT *
-        FROM card_candidates
-        WHERE status != 'rejected'
-        ORDER BY id
+        SELECT
+            id,
+            source_page,
+            caption_text,
+            card_type,
+            prompt_text,
+            answer_text,
+            answer_explanation,
+            choices_json,
+            answer_choice_ids_json,
+            chapter,
+            source_label,
+            sort_order
+        FROM cards
+        ORDER BY source_page, id
         """
     ).fetchall()
+    for row in rows:
+        caption = str(row["caption_text"] or "")
+        chapter, source_label, sort_order = figure_metadata(caption)
+        if sort_order == 0:
+            sort_order = fallback_sort_order(row["source_page"], row["id"])
 
-    for row in active_rows:
+        card_type = str(row["card_type"] or "image")
+        if card_type not in CARD_TYPES:
+            card_type = "image"
+
+        prompt_text = str(row["prompt_text"] or "")
+        if prompt_text == LEGACY_DEFAULT_PROMPT:
+            prompt_text = ""
+
+        answer_text = str(row["answer_text"] or "")
+        answer_explanation = str(row["answer_explanation"] or "")
+        should_rebuild_answer = (
+            card_type == "image"
+            and (
+                not answer_text
+                or strip_leading_figure_label(answer_text) != answer_text
+                or (answer_is_caption_derived(answer_text, caption) and not answer_explanation)
+            )
+        )
+        if should_rebuild_answer:
+            fields = answer_fields_from_caption(caption)
+            answer_text = fields.answer_text
+            answer_explanation = fields.answer_explanation
+        else:
+            answer_text = strip_leading_figure_label(answer_text)
+
+        updates = {
+            "card_type": card_type,
+            "prompt_text": prompt_text,
+            "answer_text": answer_text or answer_fields_from_caption(caption).answer_text,
+            "answer_explanation": answer_explanation,
+            "choices_json": normalize_json_array(row["choices_json"]),
+            "answer_choice_ids_json": normalize_json_array(row["answer_choice_ids_json"]),
+            "chapter": row["chapter"] if row["chapter"] and row["chapter"] != "Unknown" else chapter,
+            "source_label": row["source_label"] or source_label,
+            "sort_order": row["sort_order"] or sort_order,
+        }
         conn.execute(
             """
-            INSERT OR IGNORE INTO cards
-                (id, document_id, caption_block_id, source_page, caption_text,
-                 confidence, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE cards
+            SET
+                card_type = ?,
+                prompt_text = ?,
+                answer_text = ?,
+                answer_explanation = ?,
+                choices_json = ?,
+                answer_choice_ids_json = ?,
+                chapter = ?,
+                source_label = ?,
+                sort_order = ?,
+                updated_at = updated_at
+            WHERE id = ?
             """,
             (
+                updates["card_type"],
+                updates["prompt_text"],
+                updates["answer_text"],
+                updates["answer_explanation"],
+                updates["choices_json"],
+                updates["answer_choice_ids_json"],
+                updates["chapter"],
+                updates["source_label"],
+                updates["sort_order"],
                 row["id"],
-                row["document_id"],
-                row["caption_block_id"],
-                row["source_page"],
-                row["caption_text"],
-                row["confidence"],
-                row["notes"],
-                row["created_at"],
-                row["updated_at"],
             ),
         )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO card_images
-                (card_id, image_id, sort_order, source_caption_text)
-            VALUES (?, ?, 0, ?)
-            """,
-            (row["id"], row["image_id"], row["caption_text"]),
-        )
-
-    merged_rows = conn.execute(
-        """
-        SELECT id, image_id, caption_text, notes
-        FROM card_candidates
-        WHERE status = 'rejected'
-          AND notes LIKE '%merged_pdf_figure_into=%'
-        ORDER BY id
-        """
-    ).fetchall()
-    next_order: dict[int, int] = {
-        int(row["card_id"]): int(row["next_sort"])
-        for row in conn.execute(
-            """
-            SELECT card_id, COALESCE(MAX(sort_order), -1) + 1 AS next_sort
-            FROM card_images
-            GROUP BY card_id
-            """
-        )
-    }
-    for row in merged_rows:
-        target_id = legacy_merge_target(row["notes"])
-        if target_id is None or not conn.execute("SELECT 1 FROM cards WHERE id = ?", (target_id,)).fetchone():
-            continue
-        sort_order = next_order.get(target_id, 0)
-        next_order[target_id] = sort_order + 1
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO card_images
-                (card_id, image_id, sort_order, source_caption_text)
-            VALUES (?, ?, ?, ?)
-            """,
-            (target_id, row["image_id"], sort_order, row["caption_text"]),
-        )
-
-    copy_legacy_study_tables(conn, legacy_study_tables)
-    conn.executescript(
-        """
-        DROP TABLE IF EXISTS flashcards;
-        DROP TABLE IF EXISTS card_candidates;
-        DROP INDEX IF EXISTS idx_card_candidates_status;
-        """
-    )
-    conn.execute("PRAGMA foreign_keys = ON")
-
-
-def migrate_study_tables(conn: sqlite3.Connection) -> None:
-    if "candidate_id" in table_columns(conn, "study_favorites"):
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS study_favorites_new (
-                card_id INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO study_favorites_new (card_id, created_at)
-            SELECT candidate_id, created_at
-            FROM study_favorites
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute("DROP TABLE study_favorites")
-        conn.execute("ALTER TABLE study_favorites_new RENAME TO study_favorites")
-
-    if "candidate_id" in table_columns(conn, "study_past_exams"):
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS study_past_exams_new (
-                card_id INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO study_past_exams_new (card_id, created_at)
-            SELECT candidate_id, created_at
-            FROM study_past_exams
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute("DROP TABLE study_past_exams")
-        conn.execute("ALTER TABLE study_past_exams_new RENAME TO study_past_exams")
-
-    if "candidate_id" in table_columns(conn, "study_reviews"):
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS study_reviews_new (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL REFERENCES study_sessions(id) ON DELETE CASCADE,
-                card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-                result TEXT NOT NULL CHECK(result IN ('correct', 'wrong', 'unsure')),
-                reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO study_reviews_new (id, session_id, card_id, result, reviewed_at)
-            SELECT id, session_id, candidate_id, result, reviewed_at
-            FROM study_reviews
-            WHERE candidate_id IN (SELECT id FROM cards)
-            """
-        )
-        conn.execute("DROP TABLE study_reviews")
-        conn.execute("ALTER TABLE study_reviews_new RENAME TO study_reviews")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    migrate_legacy_schema(conn)
-    migrate_study_tables(conn)
     create_core_schema(conn)
+    migrate_card_template_fields(conn)
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cards_template_fields
+        ON cards(card_type, chapter, sort_order)
+        """
+    )
     conn.commit()

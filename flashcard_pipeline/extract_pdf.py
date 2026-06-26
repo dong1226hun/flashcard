@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .answer_fields import answer_fields_from_caption
 from .caption_repair import apply_caption_repairs
-from .db import DEFAULT_DB_PATH, connect, init_db
+from .db import DEFAULT_DB_PATH, connect, fallback_sort_order, figure_metadata, init_db
+from .media import MEDIA_ROOT, media_file_path
 
 try:
     import fitz  # PyMuPDF
@@ -456,7 +458,7 @@ def import_pdf(
                         page_number,
                         page_image_index,
                         xref,
-                        str(image_path),
+                        media_file_path(image_path),
                         image_hash,
                         ext,
                         width,
@@ -479,20 +481,33 @@ def import_pdf(
                 notes = f"caption_match={match.reason}; image_mode={image_data.mode}"
                 if match.confidence < min_caption_confidence:
                     notes += "; low_caption_confidence=1"
+                chapter, source_label, sort_order = figure_metadata(caption)
+                if sort_order == 0:
+                    sort_order = fallback_sort_order(page_number, page_image_index)
+                answer_fields = answer_fields_from_caption(caption)
                 cursor = conn.execute(
                     """
                     INSERT INTO cards
                         (
                             document_id, caption_block_id, source_page,
-                            caption_text, confidence, notes
+                            caption_text, card_type, prompt_text, answer_text,
+                            answer_explanation, chapter, source_label, sort_order,
+                            confidence, notes
                         )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         document_id,
                         match.block.db_id if match.block else None,
                         page_number,
                         caption,
+                        "image",
+                        "",
+                        answer_fields.answer_text,
+                        answer_fields.answer_explanation,
+                        chapter,
+                        source_label,
+                        sort_order,
                         match.confidence,
                         notes,
                     ),
@@ -527,7 +542,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Extract PDF images into flashcard cards.")
     parser.add_argument("pdf", type=Path, help="Source PDF path")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="SQLite DB path")
-    parser.add_argument("--assets", type=Path, default=Path("assets"), help="Asset output root")
+    parser.add_argument("--assets", type=Path, default=MEDIA_ROOT, help="Media output root")
     parser.add_argument("--max-pages", type=int, default=None, help="Import only the first N pages")
     parser.add_argument("--replace", action="store_true", help="Replace existing import for same PDF hash")
     parser.add_argument("--min-image-width", type=int, default=80)

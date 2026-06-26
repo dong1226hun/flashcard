@@ -6,7 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from .db import DEFAULT_DB_PATH, connect, init_db
+from .answer_fields import answer_fields_from_caption, answer_is_caption_derived
+from .db import DEFAULT_DB_PATH, connect, figure_metadata, init_db
 
 
 DASHES = r"\-\u2010\u2011\u2012\u2013\u2014\u2015\uff0d"
@@ -104,6 +105,8 @@ def apply_panel_labels(
             c.id,
             c.document_id,
             c.caption_text,
+            c.answer_text,
+            c.answer_explanation,
             c.source_page,
             i.page_image_index
         FROM cards c
@@ -128,7 +131,7 @@ def apply_panel_labels(
             continue
         groups.setdefault((row["document_id"], keys[0]), []).append(row)
 
-    updates: list[tuple[str, int]] = []
+    updates: list[tuple[str, int, str, int, str, str, str, int, int, int]] = []
     labeled_groups = 0
     for items in groups.values():
         if len(items) <= 1:
@@ -137,12 +140,35 @@ def apply_panel_labels(
         for index, row in enumerate(items):
             next_caption = caption_with_panel_label(row["caption_text"], panel_label_for(index))
             if next_caption != row["caption_text"]:
-                updates.append((next_caption, int(row["id"])))
+                chapter, source_label, sort_order = figure_metadata(next_caption)
+                fields = answer_fields_from_caption(next_caption)
+                should_update_answer = answer_is_caption_derived(row["answer_text"], row["caption_text"])
+                updates.append(
+                    (
+                        next_caption,
+                        1 if should_update_answer else 0,
+                        fields.answer_text,
+                        1 if should_update_answer else 0,
+                        fields.answer_explanation,
+                        chapter,
+                        source_label,
+                        sort_order,
+                        sort_order,
+                        int(row["id"]),
+                    )
+                )
 
     conn.executemany(
         """
         UPDATE cards
-        SET caption_text = ?, updated_at = CURRENT_TIMESTAMP
+        SET
+            caption_text = ?,
+            answer_text = CASE WHEN ? THEN ? ELSE answer_text END,
+            answer_explanation = CASE WHEN ? THEN ? ELSE answer_explanation END,
+            chapter = ?,
+            source_label = ?,
+            sort_order = CASE WHEN ? = 0 THEN sort_order ELSE ? END,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
         updates,

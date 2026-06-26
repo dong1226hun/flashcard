@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .caption_labels import FIGURE_TAG_RE
 from .db import DEFAULT_DB_PATH, connect, init_db
+from .media import static_media_url
 from .study import available_cards, study_sections
 
 
@@ -19,41 +19,25 @@ STATIC_DIR = PACKAGE_DIR / "static"
 DEFAULT_OUTPUT_DIR = Path("docs")
 
 
-def relative_url(path: str) -> str:
-    return Path(path).as_posix()
-
-
-def figure_label(caption: str) -> str:
-    match = FIGURE_TAG_RE.search(caption or "")
-    if not match:
-        return ""
-    label = match.group("label") or ""
-    return f"Fig. {match.group('chapter')}-{match.group('figure')}{label}."
-
-
 def convert_card_paths(card: dict[str, Any]) -> dict[str, Any]:
     card = dict(card)
-    card["figure_label"] = figure_label(card.get("caption_text", ""))
-    if card.get("file_path"):
-        card["image_url"] = relative_url(card["file_path"])
-    images = []
-    for image in card.get("images", []):
-        image = dict(image)
-        if image.get("file_path"):
-            image["image_url"] = relative_url(image["file_path"])
-        images.append(image)
-    card["images"] = images
+    media = []
+    for item in card.get("media", []):
+        item = dict(item)
+        if item.get("file_path"):
+            item["src"] = static_media_url(item["file_path"])
+            item.pop("file_path", None)
+        media.append(item)
+    card["media"] = media
     return card
 
 
 def referenced_asset_paths(cards: list[dict[str, Any]]) -> set[str]:
     paths: set[str] = set()
     for card in cards:
-        if card.get("file_path"):
-            paths.add(str(card["file_path"]))
-        for image in card.get("images", []):
-            if image.get("file_path"):
-                paths.add(str(image["file_path"]))
+        for item in card.get("media", []):
+            if item.get("file_path"):
+                paths.add(str(item["file_path"]))
     return paths
 
 
@@ -79,16 +63,27 @@ def write_json(path: Path, payload: Any) -> None:
 
 def write_index(output_dir: Path) -> None:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    html = re.sub(r'href="/static/exam\.css(\?[^"]*)?"', r'href="./static/exam.css\1"', html)
-    html = re.sub(r'src="/static/exam\.js(\?[^"]*)?"', r'src="./static/exam.js\1"', html)
+    html = re.sub(r'href="/static/styles/study\.css(\?[^"]*)?"', r'href="./static/styles/study.css\1"', html)
+    html = re.sub(r'src="/static/study/main\.js(\?[^"]*)?"', r'src="./static/study/main.js\1"', html)
+    html = html.replace('data-provider="api"', 'data-provider="static"')
     (output_dir / "index.html").write_text(html, encoding="utf-8")
+
+
+def copytree_replace(source: Path, destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
 
 
 def copy_static(output_dir: Path) -> None:
     static_dir = output_dir / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(STATIC_DIR / "exam.css", static_dir / "exam.css")
-    shutil.copy2(STATIC_DIR / "pages_exam.js", static_dir / "exam.js")
+    for legacy_file in (static_dir / "exam.css", static_dir / "styles.css", static_dir / "exam.js"):
+        if legacy_file.exists():
+            legacy_file.unlink()
+    copytree_replace(STATIC_DIR / "styles", static_dir / "styles")
+    copytree_replace(STATIC_DIR / "fonts", static_dir / "fonts")
+    copytree_replace(STATIC_DIR / "study", static_dir / "study")
 
 
 def copy_assets(output_dir: Path, asset_paths: set[str]) -> tuple[int, int]:
@@ -96,7 +91,7 @@ def copy_assets(output_dir: Path, asset_paths: set[str]) -> tuple[int, int]:
     skipped = 0
     for relative_path in sorted(asset_paths):
         source = resolve_workspace_path(relative_path)
-        destination = output_dir / relative_url(relative_path)
+        destination = output_dir / static_media_url(relative_path)
         if not source.exists() or not source.is_file():
             raise FileNotFoundError(f"Missing asset: {relative_path}")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -129,11 +124,12 @@ def export_pages(db_path: Path, output_dir: Path, *, clean: bool = False) -> dic
     conn = connect(db_path)
     try:
         init_db(conn)
-        raw_cards = available_cards(conn)
+        raw_cards = available_cards(conn, include_file_path=True)
         sections = study_sections(conn)
     finally:
         conn.close()
 
+    asset_paths = referenced_asset_paths(raw_cards)
     cards = [convert_card_paths(card) for card in raw_cards]
     generated_at = datetime.now(timezone.utc).isoformat()
     card_payload = {
@@ -150,7 +146,7 @@ def export_pages(db_path: Path, output_dir: Path, *, clean: bool = False) -> dic
     write_json(output_dir / "data" / "sections.json", sections_payload)
     write_index(output_dir)
     copy_static(output_dir)
-    copied, skipped = copy_assets(output_dir, referenced_asset_paths(cards))
+    copied, skipped = copy_assets(output_dir, asset_paths)
 
     return {
         "output_dir": str(output_dir),

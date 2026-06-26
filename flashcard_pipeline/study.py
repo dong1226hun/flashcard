@@ -1,58 +1,18 @@
 from __future__ import annotations
 
+import json
 import random
-import re
 import sqlite3
 from typing import Any
 
-from .caption_labels import FIGURE_TAG_RE
-from .db import row_to_dict
+from .db import CARD_TYPES, row_to_dict
+from .media import media_url
 
 
 DEFAULT_SESSION_SIZE = "all"
 MAX_SESSION_SIZE = 100
-VALID_RESULTS = {"correct", "wrong", "unsure"}
+VALID_RESULTS = {"correct", "wrong"}
 VALID_SOURCES = {"all", "favorites", "past_exams", "wrong", "chapter"}
-
-FIGURE_PREFIX_RE = re.compile(
-    r"(?:그림|Fig\.?|Figure)\s*\d+\s*[-‐‑‒–—―－]\s*\d+[A-Za-z]?\s*[.)]?\s*",
-    re.IGNORECASE,
-)
-PANEL_PREFIX_RE = re.compile(r"^[A-Z](?:\s*,\s*[A-Z])*\s*[,.]\s*", re.IGNORECASE)
-PANEL_RANGE_PREFIX_RE = re.compile(r"^[A-Z]\s*~\s*[A-Z]\s*,\s*", re.IGNORECASE)
-INLINE_PANEL_RE = re.compile(r"^(.{2,24}?)\s+([A-Z])\s*,\s*(.+)$", re.IGNORECASE)
-SUBJECT_TITLE_RE = re.compile(r"^(.{2,24}?)(?:에서|의)\s+")
-DESCRIPTIVE_ENDINGS = (
-    "관찰된다",
-    "관찰되며",
-    "보인다",
-    "나타난다",
-    "있다",
-    "없다",
-    "필요하다",
-    "경우",
-    "것이다",
-    "소견",
-)
-CHAPTER_TITLES = {
-    "16": "치아우식증의 영상진단",
-    "17": "치주질환의 영상진단",
-    "18": "발육성 치아 이상의 영상진단",
-    "19": "후천성 치아 이상의 영상진단",
-    "20": "구강악안면부 염증질환의 진단",
-    "21": "구강악안면부 낭의 영상진단",
-    "22": "구강악안면부 양성종양의 영상진단",
-    "23": "구강악안면부 악성종양의 영상진단",
-    "24": "구강악안면부에 나타나는 기타 골질환의 영상진단",
-    "25": "측두하악관절의 영상진단",
-    "26": "상악동의 영상진단",
-    "27": "타액선의 영상진단",
-    "28": "구강악안면부 외상의 진단",
-    "29": "연조직 석회화의 영상진단",
-    "30": "구강악안면부에 발현되는 전신질환의 영상진단",
-    "31": "구강악안면부 발육장애의 영상진단",
-    "32": "치과 임플란트를 위한 진단영상",
-}
 
 
 def normalize_limit(value: Any, default: Any = DEFAULT_SESSION_SIZE) -> int | None:
@@ -73,99 +33,8 @@ def is_truthy(value: Any) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
 
 
-def image_url(file_path: str) -> str:
-    return "/" + file_path.replace("\\", "/")
-
-
-def attach_image_url(card: dict) -> dict:
-    card["image_url"] = image_url(card["file_path"])
-    return card
-
-
-def normalized_caption_body(caption: str) -> str:
-    match = FIGURE_PREFIX_RE.search(caption or "")
-    body = (caption or "")[match.end() :] if match else caption or ""
-    body = body.replace("·", "ㆍ")
-    return " ".join(body.split())
-
-
-def clean_title_prefix(value: str) -> str:
-    text = PANEL_RANGE_PREFIX_RE.sub("", value.strip(), count=1)
-    text = re.sub(r"^[A-Z]\s*~\s*[A-Z]\s*", "", text, count=1, flags=re.IGNORECASE).strip()
-    return PANEL_PREFIX_RE.sub("", text, count=1).strip()
-
-
-def is_title_candidate(value: str) -> bool:
-    text = clean_title_prefix(value)
-    if not text:
-        return False
-    if re.fullmatch(r"[A-Z]\s*~?", text, re.IGNORECASE):
-        return False
-    if re.match(r"^[A-Z]\b", text, re.IGNORECASE):
-        return False
-    if len(text) > 34:
-        return False
-    if any(text.endswith(ending) for ending in DESCRIPTIVE_ENDINGS):
-        return False
-    return True
-
-
-def split_inline_panel_title(value: str) -> tuple[str, str] | None:
-    if PANEL_RANGE_PREFIX_RE.match(value.strip()):
-        return None
-    match = INLINE_PANEL_RE.match(value.strip())
-    if not match:
-        return None
-    title = clean_title_prefix(match.group(1))
-    if not is_title_candidate(title):
-        return None
-    return title, f"{match.group(2).upper()}, {match.group(3).strip()}"
-
-
-def split_answer_caption(caption: str) -> dict[str, str]:
-    body = normalized_caption_body(caption)
-    if not body:
-        return {"answer_title": "", "answer_detail": ""}
-
-    first, dot, rest = body.partition(".")
-    first = first.strip()
-    rest = rest.strip()
-
-    inline_panel = split_inline_panel_title(first)
-    if inline_panel:
-        title, first_detail = inline_panel
-        detail_parts = [part for part in [first_detail, rest] if part]
-        return {"answer_title": title, "answer_detail": ". ".join(detail_parts)}
-
-    patient_match = re.match(r"^(.{2,24}?)(?:\s+환자(?:의)?\b)(.*)$", first)
-    if patient_match and is_title_candidate(patient_match.group(1)):
-        title = patient_match.group(1).strip()
-        remaining_first = f"환자{patient_match.group(2)}".strip()
-        detail_parts = [part for part in [remaining_first, rest] if part]
-        return {"answer_title": title, "answer_detail": ". ".join(detail_parts)}
-
-    subject_match = SUBJECT_TITLE_RE.match(first)
-    if subject_match and is_title_candidate(subject_match.group(1)):
-        return {"answer_title": clean_title_prefix(subject_match.group(1)), "answer_detail": body}
-
-    if dot and is_title_candidate(first):
-        return {"answer_title": clean_title_prefix(first), "answer_detail": rest}
-    if dot:
-        second, _, second_rest = rest.partition(".")
-        if is_title_candidate(second):
-            return {"answer_title": clean_title_prefix(second), "answer_detail": second_rest.strip()}
-    if not dot and is_title_candidate(first):
-        return {"answer_title": clean_title_prefix(first), "answer_detail": ""}
-    return {"answer_title": "", "answer_detail": body}
-
-
-def infer_chapter(text: str) -> str:
-    match = FIGURE_TAG_RE.search(text or "")
-    return match.group("chapter") if match else "Unknown"
-
-
 def chapter_title(chapter: str) -> str:
-    return CHAPTER_TITLES.get(str(chapter), "")
+    return "" if str(chapter or "Unknown") == "Unknown" else f"단원 {chapter}"
 
 
 def normalize_source(value: Any) -> str:
@@ -173,37 +42,47 @@ def normalize_source(value: Any) -> str:
     return source if source in VALID_SOURCES else "all"
 
 
-def figure_sort_key(card: dict) -> tuple[int, int, int, int, int, int, int]:
-    match = FIGURE_TAG_RE.search(card.get("caption_text", ""))
-    source_page = int(card.get("source_page") or 0)
-    image_index = int(card.get("page_image_index") or 0)
-    card_id = int(card.get("card_id") or 0)
-    if not match:
-        return (1, source_page, 0, 0, 0, image_index, card_id)
-    label = match.group("label") or ""
-    panel_order = ord(label.upper()) - ord("A") + 1 if label else 0
-    return (
-        0,
-        int(match.group("chapter")),
-        int(match.group("figure")),
-        panel_order,
-        source_page,
-        image_index,
-        card_id,
-    )
+def normalize_card_type(value: Any) -> str:
+    card_type = str(value or "")
+    return card_type if card_type in CARD_TYPES else ""
 
 
-def enrich_card(row: sqlite3.Row) -> dict:
-    card = row_to_dict(row)
-    card["chapter"] = infer_chapter(card.get("caption_text", ""))
-    card["chapter_title"] = chapter_title(card["chapter"])
-    card["is_favorite"] = bool(card.get("is_favorite"))
-    card["is_past_exam"] = bool(card.get("is_past_exam"))
-    card.update(split_answer_caption(card.get("caption_text", "")))
-    return attach_image_url(card)
+def json_array(value: object) -> list:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
-def card_images(conn: sqlite3.Connection, card_ids: list[int]) -> dict[int, list[dict]]:
+def normalize_choices(value: object) -> list[dict[str, str]]:
+    choices: list[dict[str, str]] = []
+    for index, item in enumerate(json_array(value)):
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            choice_id = str(item.get("id") or index + 1)
+        else:
+            text = str(item or "").strip()
+            choice_id = str(index + 1)
+        if text:
+            choices.append({"id": choice_id, "text": text})
+    return choices
+
+
+def normalize_choice_ids(value: object) -> list[str]:
+    return [str(item) for item in json_array(value) if str(item).strip()]
+
+
+def card_media(
+    conn: sqlite3.Connection,
+    card_ids: list[int],
+    *,
+    include_file_path: bool = False,
+) -> dict[int, list[dict]]:
     if not card_ids:
         return {}
     placeholders = ",".join("?" for _ in card_ids)
@@ -215,8 +94,8 @@ def card_images(conn: sqlite3.Connection, card_ids: list[int]) -> dict[int, list
             ci.sort_order,
             ci.source_caption_text,
             i.file_path,
-            i.width AS image_width,
-            i.height AS image_height,
+            i.width AS width,
+            i.height AS height,
             i.bbox_json AS image_bbox,
             i.page_image_index,
             i.is_duplicate
@@ -230,18 +109,135 @@ def card_images(conn: sqlite3.Connection, card_ids: list[int]) -> dict[int, list
     grouped: dict[int, list[dict]] = {card_id: [] for card_id in card_ids}
     for row in rows:
         item = row_to_dict(row)
-        item["image_url"] = image_url(item["file_path"])
-        grouped.setdefault(int(row["card_id"]), []).append(item)
+        file_path = item["file_path"]
+        media = {
+            "kind": "image",
+            "src": media_url(file_path),
+            "alt": item.get("source_caption_text") or "카드 이미지",
+            "width": item.get("width"),
+            "height": item.get("height"),
+            "image_id": item.get("image_id"),
+            "sort_order": item.get("sort_order"),
+            "image_bbox": item.get("image_bbox"),
+            "page_image_index": item.get("page_image_index"),
+            "is_duplicate": bool(item.get("is_duplicate")),
+        }
+        if include_file_path:
+            media["file_path"] = file_path
+        grouped.setdefault(int(row["card_id"]), []).append(media)
     return grouped
 
 
-def attach_images(conn: sqlite3.Connection, cards: list[dict]) -> list[dict]:
-    grouped = card_images(conn, [int(card["card_id"]) for card in cards])
-    for card in cards:
-        images = grouped.get(int(card["card_id"]), [])
-        card["images"] = images
-        card["image_count"] = len(images)
-    return cards
+def card_dto(row: sqlite3.Row, media: list[dict]) -> dict:
+    item = row_to_dict(row)
+    card_id = int(item["card_id"])
+    card_type = str(item.get("card_type") or "image")
+    if card_type not in CARD_TYPES:
+        card_type = "image"
+
+    favorite = bool(item.get("is_favorite"))
+    past_exam = bool(item.get("is_past_exam"))
+    last_result = item.get("last_review_result") or ""
+    chapter = str(item.get("chapter") or "Unknown")
+    answer_text = str(item.get("answer_text") or "")
+    answer_explanation = str(item.get("answer_explanation") or "")
+
+    dto = {
+        "id": str(card_id),
+        "card_id": card_id,
+        "type": card_type,
+        "prompt": {"text": str(item.get("prompt_text") or "")},
+        "media": media,
+        "choices": normalize_choices(item.get("choices_json")),
+        "answer": {
+            "text": answer_text,
+            "choiceIds": normalize_choice_ids(item.get("answer_choice_ids_json")),
+            "explanation": answer_explanation,
+        },
+        "meta": {
+            "chapter": chapter,
+            "chapterTitle": chapter_title(chapter),
+            "sourcePage": item.get("source_page"),
+            "sourceLabel": item.get("source_label") or "",
+            "tags": [],
+        },
+        "review": {
+            "favorite": favorite,
+            "pastExam": past_exam,
+            "lastResult": last_result,
+        },
+        "source": {
+            "documentId": item.get("document_id"),
+            "captionText": item.get("caption_text") or "",
+            "confidence": item.get("confidence"),
+            "notes": item.get("notes") or "",
+        },
+        "sortOrder": int(item.get("sort_order") or 0),
+    }
+
+    # Transitional conveniences for admin tools and tests. The study UI uses the
+    # structured fields above.
+    dto["is_favorite"] = favorite
+    dto["is_past_exam"] = past_exam
+    dto["last_review_result"] = last_result
+    dto["chapter"] = chapter
+    dto["chapter_title"] = dto["meta"]["chapterTitle"]
+    dto["source_page"] = item.get("source_page")
+    dto["source_label"] = item.get("source_label") or ""
+    dto["image_count"] = len(media)
+    return dto
+
+
+def load_card_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT
+            c.id AS card_id,
+            c.document_id,
+            c.source_page,
+            c.caption_text,
+            c.card_type,
+            c.prompt_text,
+            c.answer_text,
+            c.answer_explanation,
+            c.choices_json,
+            c.answer_choice_ids_json,
+            c.chapter,
+            c.source_label,
+            c.sort_order,
+            c.confidence,
+            c.notes,
+            lr.result AS last_review_result,
+            CASE WHEN f.card_id IS NULL THEN 0 ELSE 1 END AS is_favorite,
+            CASE WHEN pe.card_id IS NULL THEN 0 ELSE 1 END AS is_past_exam
+        FROM cards c
+        LEFT JOIN study_favorites f ON f.card_id = c.id
+        LEFT JOIN study_past_exams pe ON pe.card_id = c.id
+        LEFT JOIN study_reviews lr ON lr.id = (
+            SELECT sr.id
+            FROM study_reviews sr
+            WHERE sr.card_id = c.id
+            ORDER BY datetime(sr.reviewed_at) DESC, sr.id DESC
+            LIMIT 1
+        )
+        ORDER BY c.sort_order, c.source_page, c.id
+        """
+    ).fetchall()
+
+
+def card_matches_query(card: dict, query: str) -> bool:
+    needle = str(query or "").strip().lower()
+    if not needle:
+        return True
+    fields = [
+        card["prompt"]["text"],
+        card["answer"]["text"],
+        card["answer"]["explanation"],
+        card["meta"]["sourceLabel"],
+        card["source"]["captionText"],
+        card["source"]["notes"],
+    ]
+    return any(needle in str(value or "").lower() for value in fields)
 
 
 def available_cards(
@@ -252,57 +248,36 @@ def available_cards(
     randomize: bool = False,
     source: str = "all",
     chapter: str | None = None,
+    card_type: str | None = None,
+    q: str | None = None,
+    include_file_path: bool = False,
 ) -> list[dict]:
     source = normalize_source(source)
-    rows = conn.execute(
-        """
-        SELECT
-            c.id AS card_id,
-            c.document_id,
-            c.source_page,
-            c.caption_text,
-            c.confidence,
-            c.notes,
-            i.id AS image_id,
-            i.file_path,
-            i.page_image_index,
-            i.width AS image_width,
-            i.height AS image_height,
-            i.is_duplicate,
-            lr.result AS last_review_result,
-            CASE WHEN f.card_id IS NULL THEN 0 ELSE 1 END AS is_favorite,
-            CASE WHEN pe.card_id IS NULL THEN 0 ELSE 1 END AS is_past_exam
-        FROM cards c
-        JOIN card_images ci ON ci.card_id = c.id
-        JOIN extracted_images i ON i.id = ci.image_id
-        LEFT JOIN study_favorites f ON f.card_id = c.id
-        LEFT JOIN study_past_exams pe ON pe.card_id = c.id
-        LEFT JOIN study_reviews lr ON lr.id = (
-            SELECT sr.id
-            FROM study_reviews sr
-            WHERE sr.card_id = c.id
-            ORDER BY datetime(sr.reviewed_at) DESC, sr.id DESC
-            LIMIT 1
-        )
-        WHERE ci.sort_order = (
-            SELECT MIN(sort_order) FROM card_images WHERE card_id = c.id
-        )
-        ORDER BY c.source_page, c.id
-        """
-    ).fetchall()
-    cards = [enrich_card(row) for row in rows]
-    attach_images(conn, cards)
-    if source == "favorites":
-        cards = [card for card in cards if card["is_favorite"]]
-    elif source == "past_exams":
-        cards = [card for card in cards if card["is_past_exam"]]
-    elif source == "wrong":
-        cards = [card for card in cards if card.get("last_review_result") == "wrong"]
-    elif source == "chapter":
-        chapter_value = str(chapter or "")
-        cards = [card for card in cards if card["chapter"] == chapter_value]
+    chapter_value = str(chapter) if chapter not in (None, "") else ""
+    card_type_value = normalize_card_type(card_type)
+    rows = load_card_rows(conn)
+    media_by_card = card_media(
+        conn,
+        [int(row["card_id"]) for row in rows],
+        include_file_path=include_file_path,
+    )
+    cards = [card_dto(row, media_by_card.get(int(row["card_id"]), [])) for row in rows]
 
-    cards.sort(key=figure_sort_key)
+    if source == "favorites":
+        cards = [card for card in cards if card["review"]["favorite"]]
+    elif source == "past_exams":
+        cards = [card for card in cards if card["review"]["pastExam"]]
+    elif source == "wrong":
+        cards = [card for card in cards if card["review"]["lastResult"] == "wrong"]
+    elif source == "chapter":
+        cards = [card for card in cards if card["meta"]["chapter"] == chapter_value]
+
+    if source != "chapter" and chapter_value:
+        cards = [card for card in cards if card["meta"]["chapter"] == chapter_value]
+    if card_type_value:
+        cards = [card for card in cards if card["type"] == card_type_value]
+    if q and str(q).strip():
+        cards = [card for card in cards if card_matches_query(card, str(q))]
 
     if randomize:
         random.shuffle(cards)
@@ -318,6 +293,8 @@ def create_session(
     requested_count: Any = DEFAULT_SESSION_SIZE,
     source: Any = "all",
     chapter: Any = None,
+    card_type: Any = None,
+    q: Any = None,
     ordered: Any = True,
 ) -> dict:
     limit = normalize_limit(requested_count)
@@ -329,6 +306,8 @@ def create_session(
         randomize=not is_truthy(ordered),
         source=source_value,
         chapter=chapter_value,
+        card_type=card_type,
+        q=q,
     )
     source_filter = source_value if source_value != "chapter" else f"chapter:{chapter_value}"
     cursor = conn.execute(
@@ -362,16 +341,16 @@ def record_review(
     result: str,
 ) -> dict:
     if result not in VALID_RESULTS:
-        raise ValueError("Invalid result")
+        raise ValueError("지원하지 않는 평가 결과입니다")
     session = conn.execute(
         "SELECT id, card_count FROM study_sessions WHERE id = ?",
         (int(session_id),),
     ).fetchone()
     if session is None:
-        raise LookupError("Session not found")
+        raise LookupError("세션을 찾을 수 없습니다")
     card = conn.execute("SELECT id FROM cards WHERE id = ?", (int(card_id),)).fetchone()
     if card is None:
-        raise LookupError("Card not found")
+        raise LookupError("카드를 찾을 수 없습니다")
 
     cursor = conn.execute(
         """
@@ -401,6 +380,7 @@ def record_review(
         "review_id": int(cursor.lastrowid),
         "session_id": int(session_id),
         "card_id": int(card_id),
+        "id": str(card_id),
         "result": result,
         "reviewed_count": reviewed_count,
         "completed": completed,
@@ -422,41 +402,52 @@ def study_summary(conn: sqlite3.Connection) -> dict:
     ).fetchone()["n"]
     favorite_cards = conn.execute("SELECT COUNT(*) AS n FROM study_favorites").fetchone()["n"]
     past_exam_cards = conn.execute("SELECT COUNT(*) AS n FROM study_past_exams").fetchone()["n"]
-    by_result = {"correct": 0, "wrong": 0, "unsure": 0}
+    by_result = {"correct": 0, "wrong": 0}
     for row in conn.execute("SELECT result, COUNT(*) AS count FROM study_reviews GROUP BY result"):
-        by_result[row["result"]] = row["count"]
+        if row["result"] in by_result:
+            by_result[row["result"]] = row["count"]
 
     return {
         "available_cards": available,
+        "past_exam_cards": past_exam_cards,
         "reviewed_cards": reviewed_cards,
         "total_reviews": total_reviews,
         "today_reviews": today_reviews,
         "favorite_cards": favorite_cards,
-        "past_exam_cards": past_exam_cards,
         "correct": by_result["correct"],
         "wrong": by_result["wrong"],
-        "unsure": by_result["unsure"],
     }
+
+
+def sorted_chapter_rows(cards: list[dict]) -> list[dict]:
+    chapters: dict[str, dict] = {}
+    for card in cards:
+        chapter = card["meta"]["chapter"] or "Unknown"
+        item = chapters.setdefault(
+            chapter,
+            {"chapter": chapter, "title": card["meta"].get("chapterTitle") or "", "count": 0},
+        )
+        item["count"] += 1
+
+    def chapter_key(item: dict) -> tuple[int, str]:
+        chapter = str(item["chapter"])
+        try:
+            numeric = int(chapter)
+        except ValueError:
+            numeric = 9999
+        return numeric, chapter
+
+    return sorted(chapters.values(), key=chapter_key)
 
 
 def study_sections(conn: sqlite3.Connection) -> dict:
     cards = available_cards(conn)
-    chapters: dict[str, int] = {}
-    for card in cards:
-        chapters[card["chapter"]] = chapters.get(card["chapter"], 0) + 1
-    chapter_rows = [
-        {"chapter": chapter, "title": chapter_title(chapter), "count": count}
-        for chapter, count in sorted(
-            chapters.items(),
-            key=lambda item: (9999 if item[0] == "Unknown" else int(item[0]), item[0]),
-        )
-    ]
     return {
         "all": len(cards),
-        "favorites": sum(1 for card in cards if card["is_favorite"]),
-        "past_exams": sum(1 for card in cards if card["is_past_exam"]),
-        "wrong": sum(1 for card in cards if card.get("last_review_result") == "wrong"),
-        "chapters": chapter_rows,
+        "favorites": sum(1 for card in cards if card["review"]["favorite"]),
+        "past_exams": sum(1 for card in cards if card["review"]["pastExam"]),
+        "wrong": sum(1 for card in cards if card["review"]["lastResult"] == "wrong"),
+        "chapters": sorted_chapter_rows(cards),
     }
 
 
@@ -470,7 +461,12 @@ def set_favorite(conn: sqlite3.Connection, *, card_id: Any, favorite: Any) -> di
     else:
         conn.execute("DELETE FROM study_favorites WHERE card_id = ?", (int(card_id),))
     conn.commit()
-    return {"card_id": int(card_id), "is_favorite": is_favorite}
+    return {
+        "card_id": int(card_id),
+        "id": str(card_id),
+        "is_favorite": is_favorite,
+        "review": {"favorite": is_favorite},
+    }
 
 
 def set_past_exam(conn: sqlite3.Connection, *, card_id: Any, past_exam: Any) -> dict:
@@ -483,4 +479,9 @@ def set_past_exam(conn: sqlite3.Connection, *, card_id: Any, past_exam: Any) -> 
     else:
         conn.execute("DELETE FROM study_past_exams WHERE card_id = ?", (int(card_id),))
     conn.commit()
-    return {"card_id": int(card_id), "is_past_exam": is_past_exam}
+    return {
+        "card_id": int(card_id),
+        "id": str(card_id),
+        "is_past_exam": is_past_exam,
+        "review": {"pastExam": is_past_exam},
+    }

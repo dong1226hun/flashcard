@@ -4,4 +4,6 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 tmp/
-review-server*.log
+*.log
+data/flashcards.sqlite.before_*
+data/flashcards_raw.sqlite

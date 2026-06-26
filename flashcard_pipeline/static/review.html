@@ -3,17 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Card Admin</title>
+    <title>카드 관리</title>
     <script>
       (() => {
         try {
-          document.documentElement.dataset.theme = localStorage.getItem("flashcard-theme") || "dark";
+          const theme = localStorage.getItem("flashcard-theme") === "dark" ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
         } catch {
-          document.documentElement.dataset.theme = "dark";
+          document.documentElement.dataset.theme = "light";
+          document.documentElement.style.colorScheme = "light";
         }
       })();
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=7" />
+    <link rel="stylesheet" href="/static/styles/admin.css?v=22" />
   </head>
   <body>
     <div class="app-shell">
@@ -21,40 +24,41 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
           <div>
-            <h1>Card Admin</h1>
-            <p id="document-count">cards database</p>
+            <h1>카드 관리</h1>
+            <p id="document-count">카드 데이터베이스</p>
           </div>
-          <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="true" aria-label="테마 전환">
+          <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="테마 전환">
             <span class="theme-toggle-track" aria-hidden="true">
               <span class="theme-toggle-thumb"></span>
             </span>
-            <span class="theme-toggle-text">Dark</span>
+            <span class="theme-toggle-text">Light</span>
           </button>
         </div>
+        <button id="export-static" class="primary static-save">static에 저장</button>
 
-        <section class="summary-grid" aria-label="Card summary">
+        <section class="summary-grid" aria-label="카드 요약">
           <div class="metric">
-            <span class="metric-label">Cards</span>
+            <span class="metric-label">카드</span>
             <strong id="metric-cards">0</strong>
           </div>
           <div class="metric">
-            <span class="metric-label">Favorites</span>
+            <span class="metric-label">즐겨찾기</span>
             <strong id="metric-favorites">0</strong>
           </div>
           <div class="metric">
-            <span class="metric-label">Past Exams</span>
+            <span class="metric-label">기출</span>
             <strong id="metric-past-exams">0</strong>
           </div>
           <div class="metric">
-            <span class="metric-label">Multi-image</span>
+            <span class="metric-label">여러 이미지</span>
             <strong id="metric-multi">0</strong>
           </div>
         </section>
 
-        <section class="filter-panel" aria-label="Card filters">
+        <section class="filter-panel" aria-label="카드 필터">
           <label>
             검색
-            <input id="query" type="search" placeholder="제목, caption, notes" />
+            <input id="query" type="search" placeholder="문제, 정답, 메모" />
           </label>
           <div class="filter-row">
             <label>
@@ -62,7 +66,7 @@
               <input id="chapter" inputmode="numeric" placeholder="18" />
             </label>
             <label>
-              page
+              페이지
               <input id="page" inputmode="numeric" placeholder="61" />
             </label>
           </div>
@@ -72,54 +76,51 @@
           </label>
           <label class="check-row">
             <input id="past-exam-only" type="checkbox" />
-            기출문제만
+            기출만
           </label>
           <label class="check-row">
             <input id="multi-only" type="checkbox" />
             여러 이미지 카드만
           </label>
-          <button id="apply-filters" class="primary">필터 적용</button>
+          <button id="apply-filters" class="filter-apply">필터 적용</button>
         </section>
 
-        <section class="crop-panel" aria-label="PDF crop preview">
-          <div class="panel-title">PDF crop</div>
-          <div id="crop-preview" class="crop-preview">선택한 카드의 원본 PDF crop이 여기에 표시됩니다.</div>
-        </section>
       </aside>
 
       <main class="workspace">
         <header class="workspace-header">
           <div>
-            <p class="eyebrow">Current Cards</p>
+            <p class="eyebrow">현재 카드</p>
             <h2 id="view-title">카드 관리</h2>
           </div>
           <div class="toolbar">
             <label class="select-label">
-              Page size
+              페이지 크기
               <select id="page-size">
-                <option value="10">10</option>
-                <option value="25" selected>25</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
+                <option value="24" selected>24</option>
+                <option value="48">48</option>
+                <option value="96">96</option>
               </select>
             </label>
             <button id="merge-selected" class="secondary">선택 병합</button>
-            <button id="crop-selected" class="secondary">PDF crop</button>
-            <button id="refresh" class="secondary">Refresh</button>
+            <button id="refresh" class="secondary">새로고침</button>
           </div>
         </header>
 
         <section id="card-list" class="card-list" aria-live="polite"></section>
 
         <footer class="pager">
-          <button id="prev" class="secondary">Previous</button>
+          <div class="pager-nav">
+            <button id="prev" class="secondary">이전</button>
+            <div id="page-numbers" class="page-numbers" aria-label="페이지 이동"></div>
+            <button id="next" class="secondary">다음</button>
+          </div>
           <span id="page-label">0</span>
-          <button id="next" class="secondary">Next</button>
         </footer>
       </main>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=7"></script>
+    <script src="/static/app.js?v=22"></script>
   </body>
 </html>

@@ -1,42 +1,7 @@
-const THEME_STORAGE_KEY = "flashcard-theme";
-
-function currentTheme() {
-  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
-}
-
-function applyTheme(theme) {
-  const nextTheme = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = nextTheme;
-  document.documentElement.style.colorScheme = nextTheme;
-  const toggle = document.querySelector("#theme-toggle");
-  if (toggle) {
-    const label = toggle.querySelector(".theme-toggle-text");
-    if (label) label.textContent = nextTheme === "dark" ? "Dark" : "Light";
-    toggle.setAttribute("aria-pressed", String(nextTheme === "dark"));
-    toggle.setAttribute("aria-checked", String(nextTheme === "dark"));
-    toggle.setAttribute("title", nextTheme === "dark" ? "Switch to light mode" : "Switch to dark mode");
-  }
-}
-
-function initThemeToggle() {
-  applyTheme(currentTheme());
-  const toggle = document.querySelector("#theme-toggle");
-  if (!toggle) return;
-  toggle.addEventListener("click", () => {
-    const nextTheme = currentTheme() === "dark" ? "light" : "dark";
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
-    } catch {
-      // Theme still changes for this page if localStorage is unavailable.
-    }
-    applyTheme(nextTheme);
-  });
-}
-
-initThemeToggle();
+import("./theme.js").then(({ initThemeToggle }) => initThemeToggle());
 
 const state = {
-  limit: 25,
+  limit: 24,
   offset: 0,
   total: 0,
   selected: new Set(),
@@ -55,13 +20,13 @@ const els = {
   documentCount: document.querySelector("#document-count"),
   viewTitle: document.querySelector("#view-title"),
   pageLabel: document.querySelector("#page-label"),
+  pageNumbers: document.querySelector("#page-numbers"),
   prev: document.querySelector("#prev"),
   next: document.querySelector("#next"),
   refresh: document.querySelector("#refresh"),
+  exportStatic: document.querySelector("#export-static"),
   pageSize: document.querySelector("#page-size"),
   mergeSelected: document.querySelector("#merge-selected"),
-  cropSelected: document.querySelector("#crop-selected"),
-  cropPreview: document.querySelector("#crop-preview"),
   toast: document.querySelector("#toast"),
   query: document.querySelector("#query"),
   chapter: document.querySelector("#chapter"),
@@ -86,7 +51,7 @@ async function fetchJson(url, options = {}) {
     ...options,
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed");
+  if (!response.ok) throw new Error(data.error || "요청에 실패했습니다");
   return data;
 }
 
@@ -109,6 +74,12 @@ function button(text, className = "secondary") {
   return node;
 }
 
+function setDraftToggle(buttonNode, active, activeText, inactiveText) {
+  buttonNode.dataset.active = String(Boolean(active));
+  buttonNode.className = active ? "exam active" : "secondary";
+  buttonNode.textContent = active ? activeText : inactiveText;
+}
+
 function badge(text, className = "") {
   const node = document.createElement("span");
   node.className = `badge${className ? ` ${className}` : ""}`;
@@ -116,23 +87,52 @@ function badge(text, className = "") {
   return node;
 }
 
-function figureLabel(item) {
-  return item.figure_key ? `그림 ${item.figure_key}` : "그림 미확인";
+function labelWithControl(text, control, options = {}) {
+  const label = document.createElement("label");
+  label.className = `field${options.className ? ` ${options.className}` : ""}`;
+  if (options.types) label.dataset.visibleTypes = options.types.join(" ");
+  label.textContent = text;
+  label.appendChild(control);
+  return label;
 }
 
-function composeCaption(baseCaption, answerTitle, answerDetail) {
-  const title = answerTitle.trim().replace(/\s+/g, " ");
-  const detail = answerDetail.trim().replace(/\s+/g, " ");
-  let body = detail;
-  if (title && detail) {
-    body = `${title}${/[.?!]$/.test(title) ? "" : "."} ${detail}`;
-  } else if (title) {
-    body = title;
-  }
+function syncTypeFields(article) {
+  const select = article.querySelector(".card-type-select");
+  const type = select?.value || "image";
+  article.dataset.cardType = type;
 
-  const match = (baseCaption || "").match(/^(?:(?:그림|Fig\.?|Figure)\s*\d+\s*[-‐‑‒–—―－]\s*\d+[A-Za-z]?\s*[.)]?\s*)/i);
-  const prefix = match ? match[0].trim() : "";
-  return prefix ? `${prefix} ${body}`.trim() : body;
+  article.querySelectorAll("[data-visible-types]").forEach((node) => {
+    const visibleTypes = (node.dataset.visibleTypes || "").split(" ");
+    node.classList.toggle("is-hidden-by-type", !visibleTypes.includes(type));
+  });
+
+  const typeBadge = article.querySelector(".card-type-badge");
+  if (typeBadge) typeBadge.textContent = cardTypeLabel(type);
+}
+
+function input(value = "", className = "") {
+  const node = document.createElement("input");
+  node.className = className;
+  node.value = value;
+  return node;
+}
+
+function textarea(value = "", className = "", rows = 3) {
+  const node = document.createElement("textarea");
+  node.className = className;
+  node.rows = rows;
+  node.value = value;
+  return node;
+}
+
+function figureLabel(item) {
+  return item.source_label || item.meta?.sourceLabel || "출처 없음";
+}
+
+function cardTypeLabel(type) {
+  if (type === "multiple_choice") return "객관식";
+  if (type === "short_answer") return "주관식";
+  return "이미지";
 }
 
 function activeFilters() {
@@ -164,24 +164,259 @@ async function loadSummary() {
     fetchJson("/api/study/summary"),
     fetchJson("/api/cards?multi=1&limit=1"),
   ]);
-  setText(els.documentCount, `${summary.available_cards} cards`);
+  setText(els.documentCount, `${summary.available_cards}장`);
   setText(els.metrics.cards, summary.available_cards);
   setText(els.metrics.favorites, summary.favorite_cards);
   setText(els.metrics.pastExams, summary.past_exam_cards);
   setText(els.metrics.multi, multi.total);
 }
 
+function mediaItems(item) {
+  return item.media && item.media.length ? item.media : item.images || [];
+}
+
 function renderImages(item, wrap) {
-  const images = item.images && item.images.length
-    ? item.images
-    : [{ image_url: item.image_url, image_width: item.image_width, image_height: item.image_height }];
-  wrap.classList.toggle("multi", images.length > 1);
-  for (const imageItem of images) {
+  const media = mediaItems(item);
+  wrap.classList.toggle("multi", media.length > 1);
+  for (const mediaItem of media) {
     const image = document.createElement("img");
     image.loading = "lazy";
-    image.src = imageItem.image_url;
-    image.alt = `Card image from page ${item.source_page}`;
+    image.src = mediaItem.src || mediaItem.image_url;
+    image.alt = mediaItem.alt || `카드 이미지 ${item.source_page ? `${item.source_page}쪽` : ""}`;
     wrap.appendChild(image);
+  }
+}
+
+function parseChoices(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed);
+  if (!Array.isArray(parsed)) throw new Error("선택지는 JSON 배열이어야 합니다");
+  return parsed;
+}
+
+function choiceIdsFromInput(value) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function compactText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function itemType(item) {
+  return item.card_type || item.type || "image";
+}
+
+function itemPrompt(item) {
+  return compactText(item.prompt_text || item.prompt?.text);
+}
+
+function itemAnswer(item) {
+  return compactText(item.answer_text || item.answer?.text);
+}
+
+function tileTitle(item) {
+  if (itemType(item) === "image") {
+    return itemAnswer(item) || itemPrompt(item) || "제목 없음";
+  }
+  return itemPrompt(item) || "문제 없음";
+}
+
+function tileStatusBadges(item) {
+  const statuses = [];
+  if (item.last_review_result === "wrong") statuses.push(["틀림", "wrong"]);
+  if (item.is_favorite) statuses.push(["즐겨찾기", "favorite"]);
+  if (item.is_past_exam) statuses.push(["기출", "past-exam"]);
+  return statuses;
+}
+
+function closeEditor() {
+  const overlay = document.querySelector("#editor-overlay");
+  if (!overlay) return;
+  overlay.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  const body = overlay.querySelector(".editor-dialog-body");
+  if (body) body.replaceChildren();
+}
+
+function ensureEditorOverlay() {
+  let overlay = document.querySelector("#editor-overlay");
+  if (overlay) return overlay;
+
+  overlay = document.createElement("div");
+  overlay.id = "editor-overlay";
+  overlay.className = "editor-overlay hidden";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+
+  const backdrop = document.createElement("button");
+  backdrop.type = "button";
+  backdrop.className = "editor-backdrop";
+  backdrop.setAttribute("aria-label", "편집창 닫기");
+  backdrop.addEventListener("click", closeEditor);
+
+  const dialog = document.createElement("div");
+  dialog.className = "editor-dialog";
+
+  const header = document.createElement("div");
+  header.className = "editor-dialog-header";
+  const title = document.createElement("h3");
+  title.textContent = "카드 수정";
+  const close = button("닫기", "secondary editor-close");
+  close.addEventListener("click", closeEditor);
+  header.append(title, close);
+
+  const body = document.createElement("div");
+  body.className = "editor-dialog-body";
+  dialog.append(header, body);
+  overlay.append(backdrop, dialog);
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function openEditor(item) {
+  const overlay = ensureEditorOverlay();
+  const title = overlay.querySelector(".editor-dialog-header h3");
+  if (title) title.textContent = `#${item.card_id} 카드 수정`;
+  const body = overlay.querySelector(".editor-dialog-body");
+  body.replaceChildren(cardTemplate(item));
+  overlay.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+  const firstControl = overlay.querySelector(".card-type-select");
+  if (firstControl) firstControl.focus();
+}
+
+function cardTile(item) {
+  const article = document.createElement("article");
+  const type = itemType(item);
+  const media = mediaItems(item);
+  article.className = `card-tile ${type === "image" && media.length ? "has-thumb" : "text-only"}`;
+  article.dataset.id = item.card_id;
+  article.dataset.cardType = type;
+  article.tabIndex = 0;
+  article.setAttribute("role", "button");
+  article.setAttribute("aria-label", `#${item.card_id} 카드 수정`);
+
+  const selector = document.createElement("label");
+  selector.className = "tile-select";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = state.selected.has(Number(item.card_id));
+  checkbox.addEventListener("click", (event) => event.stopPropagation());
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) state.selected.add(Number(item.card_id));
+    else state.selected.delete(Number(item.card_id));
+    article.classList.toggle("is-selected", checkbox.checked);
+    updateBulkButtons();
+  });
+  checkbox.setAttribute("aria-label", `#${item.card_id} 선택`);
+  selector.addEventListener("click", (event) => event.stopPropagation());
+  selector.append(checkbox);
+
+  const body = document.createElement("div");
+  body.className = "tile-body";
+
+  const meta = document.createElement("div");
+  meta.className = "tile-meta";
+  const number = document.createElement("span");
+  number.className = "tile-number";
+  number.textContent = `#${item.card_id}`;
+  const status = document.createElement("div");
+  status.className = "tile-status";
+  for (const [text, className] of tileStatusBadges(item)) {
+    status.appendChild(badge(text, className));
+  }
+  meta.append(selector, number, status);
+  body.appendChild(meta);
+
+  if (type === "image" && media.length) {
+    const thumb = document.createElement("div");
+    thumb.className = "tile-thumb";
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.src = media[0].src || media[0].image_url;
+    image.alt = media[0].alt || "카드 이미지";
+    thumb.appendChild(image);
+    body.appendChild(thumb);
+  }
+
+  const textRow = document.createElement("div");
+  textRow.className = "tile-text-row";
+  const title = document.createElement("div");
+  title.className = "item-title tile-title";
+  const main = document.createElement("span");
+  main.className = "item-main";
+  main.textContent = tileTitle(item);
+  title.appendChild(main);
+
+  const source = document.createElement("span");
+  source.className = "item-page tile-source";
+  source.textContent = figureLabel(item);
+  textRow.append(title, source);
+  body.appendChild(textRow);
+
+  article.classList.toggle("is-selected", checkbox.checked);
+  article.appendChild(body);
+  article.addEventListener("click", () => openEditor(item));
+  article.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openEditor(item);
+    }
+  });
+  return article;
+}
+
+function pageButton(page, currentPage) {
+  const node = button(String(page), "secondary page-number");
+  node.classList.toggle("is-current", page === currentPage);
+  node.disabled = page === currentPage;
+  node.setAttribute("aria-label", `${page}페이지로 이동`);
+  if (page === currentPage) node.setAttribute("aria-current", "page");
+  node.addEventListener("click", () => {
+    state.offset = (page - 1) * state.limit;
+    refresh();
+  });
+  return node;
+}
+
+function renderPageNumbers() {
+  if (!els.pageNumbers) return;
+  els.pageNumbers.replaceChildren();
+  const pageCount = Math.ceil(state.total / state.limit);
+  if (pageCount <= 1) return;
+
+  const currentPage = Math.floor(state.offset / state.limit) + 1;
+  const pages = new Set([1, pageCount]);
+  const addRange = (start, end) => {
+    for (let page = Math.max(1, start); page <= Math.min(pageCount, end); page += 1) {
+      pages.add(page);
+    }
+  };
+
+  if (pageCount <= 7) {
+    addRange(1, pageCount);
+  } else if (currentPage <= 4) {
+    addRange(1, 5);
+  } else if (currentPage >= pageCount - 3) {
+    addRange(pageCount - 4, pageCount);
+  } else {
+    addRange(currentPage - 1, currentPage + 1);
+  }
+
+  let previous = 0;
+  for (const page of Array.from(pages).sort((a, b) => a - b)) {
+    if (previous && page - previous > 1) {
+      const gap = document.createElement("span");
+      gap.className = "page-gap";
+      gap.textContent = "...";
+      els.pageNumbers.appendChild(gap);
+    }
+    els.pageNumbers.appendChild(pageButton(page, currentPage));
+    previous = page;
   }
 }
 
@@ -189,6 +424,7 @@ function cardTemplate(item) {
   const article = document.createElement("article");
   article.className = "card-row";
   article.dataset.id = item.card_id;
+  article.dataset.cardType = item.card_type || item.type || "image";
 
   const imagePane = document.createElement("div");
   imagePane.className = "image-pane";
@@ -199,10 +435,12 @@ function cardTemplate(item) {
   imageMeta.className = "image-meta";
   imageMeta.append(
     badge(figureLabel(item)),
-    badge(`p.${item.source_page}`),
-    badge(`${item.image_count || 1} img`),
+    badge(item.source_page ? `${item.source_page}쪽` : "쪽 없음"),
+    badge(`이미지 ${item.image_count || 0}`),
   );
-  if (item.is_favorite) imageMeta.appendChild(badge("favorite", "favorite"));
+  const typeBadge = badge(cardTypeLabel(item.card_type || item.type), "card-type-badge");
+  imageMeta.appendChild(typeBadge);
+  if (item.is_favorite) imageMeta.appendChild(badge("즐겨찾기", "favorite"));
   if (item.is_past_exam) imageMeta.appendChild(badge("기출", "past-exam"));
   imagePane.append(imageWrap, imageMeta);
 
@@ -226,76 +464,122 @@ function cardTemplate(item) {
   const heading = document.createElement("div");
   heading.className = "card-heading";
   const title = document.createElement("strong");
-  title.textContent = item.answer_title || figureLabel(item);
+  title.textContent = item.prompt_text || item.prompt?.text || figureLabel(item);
   const subtitle = document.createElement("span");
-  subtitle.textContent = item.answer_detail || item.caption_text || "caption 없음";
+  subtitle.textContent = item.answer_text || item.answer?.text || "정답 없음";
   heading.append(title, subtitle);
   topLine.append(selector, heading);
 
-  const answerFields = document.createElement("div");
-  answerFields.className = "answer-fields";
-  const answerTitleLabel = document.createElement("label");
-  answerTitleLabel.textContent = "대표제목";
-  const answerTitle = document.createElement("input");
-  answerTitle.className = "answer-title-input";
-  answerTitle.value = item.answer_title || "";
-  answerTitle.placeholder = "대표제목";
-  answerTitleLabel.appendChild(answerTitle);
+  const typeSelect = document.createElement("select");
+  typeSelect.className = "card-type-select";
+  for (const type of ["image", "multiple_choice", "short_answer"]) {
+    const option = document.createElement("option");
+    option.value = type;
+    option.textContent = cardTypeLabel(type);
+    option.selected = type === (item.card_type || item.type);
+    typeSelect.appendChild(option);
+  }
 
-  const answerDetailLabel = document.createElement("label");
-  answerDetailLabel.textContent = "내역";
-  const answerDetail = document.createElement("textarea");
-  answerDetail.className = "answer-detail-input";
-  answerDetail.value = item.answer_detail || "";
-  answerDetail.placeholder = "카드 뒷면에 표시할 상세 내역";
-  answerDetailLabel.appendChild(answerDetail);
-  answerFields.append(answerTitleLabel, answerDetailLabel);
+  const typeControl = document.createElement("div");
+  typeControl.className = "type-control";
+  typeControl.appendChild(labelWithControl("카드 유형", typeSelect, { className: "type-field" }));
 
-  const captionLabel = document.createElement("label");
-  captionLabel.textContent = "Caption";
-  const caption = document.createElement("textarea");
-  caption.className = "caption";
-  caption.value = item.caption_text || "";
-  captionLabel.appendChild(caption);
+  const prompt = textarea(item.prompt_text || item.prompt?.text || "", "prompt-input", 2);
+  const answer = textarea(item.answer_text || item.answer?.text || "", "answer-text-input", 3);
+  const explanation = textarea(item.answer_explanation || item.answer?.explanation || "", "answer-explanation-input", 3);
+  const choices = textarea(item.choices_json || JSON.stringify(item.choices || [], null, 2), "choices-input", 5);
+  const answerChoiceIds = input((item.answer?.choiceIds || []).join(", "), "answer-choice-ids-input");
+  const sourceLabel = input(item.source_label || item.meta?.sourceLabel || "", "source-label-input");
+  const chapter = input(item.chapter || item.meta?.chapter || "", "chapter-input");
+  const sortOrder = input(String(item.sortOrder || 0), "sort-order-input");
+  sortOrder.inputMode = "numeric";
+  const caption = textarea(item.caption_text || item.source?.captionText || "", "caption", 3);
+  const notes = textarea(item.notes || item.source?.notes || "", "notes", 3);
 
-  const notesLabel = document.createElement("label");
-  notesLabel.textContent = "Notes";
-  const notes = document.createElement("textarea");
-  notes.className = "notes";
-  notes.value = item.notes || "";
-  notesLabel.appendChild(notes);
+  const fields = document.createElement("div");
+  fields.className = "answer-fields edit-form";
+  fields.append(
+    labelWithControl("문제", prompt, {
+      className: "prompt-field field-full",
+      types: ["multiple_choice", "short_answer"],
+    }),
+    labelWithControl("선택지 JSON", choices, {
+      className: "choices-field field-full",
+      types: ["multiple_choice"],
+    }),
+    labelWithControl("정답 선택지 ID", answerChoiceIds, {
+      className: "choice-id-field",
+      types: ["multiple_choice"],
+    }),
+    labelWithControl("정답", answer, { className: "answer-field field-full" }),
+    labelWithControl("해설", explanation, { className: "explanation-field field-full" }),
+    labelWithControl("출처 라벨", sourceLabel, { className: "source-label-field" }),
+    labelWithControl("단원", chapter, { className: "chapter-field" }),
+    labelWithControl("원본 캡션", caption, {
+      className: "caption-field field-full",
+      types: ["image"],
+    }),
+  );
+
+  const advanced = document.createElement("details");
+  advanced.className = "advanced-fields";
+  const advancedSummary = document.createElement("summary");
+  advancedSummary.textContent = "고급사항";
+  const advancedBody = document.createElement("div");
+  advancedBody.className = "answer-fields edit-form advanced-grid";
+  advancedBody.append(
+    labelWithControl("정렬 순서", sortOrder, { className: "sort-order-field" }),
+    labelWithControl("메모", notes, { className: "notes-field field-full" }),
+  );
+  advanced.append(advancedSummary, advancedBody);
+  typeSelect.addEventListener("change", () => syncTypeFields(article));
 
   const actions = document.createElement("div");
   actions.className = "actions";
   const save = button("저장", "primary");
   const favorite = button(item.is_favorite ? "즐겨찾기 해제" : "즐겨찾기", item.is_favorite ? "exam active" : "secondary");
-  const pastExam = button(item.is_past_exam ? "기출 해제" : "기출문제", item.is_past_exam ? "exam active" : "secondary");
+  const pastExam = button(item.is_past_exam ? "기출 해제" : "기출", item.is_past_exam ? "exam active" : "secondary");
   const sameFigure = button("같은 그림", "secondary");
-  const crop = button("PDF crop", "secondary");
   const split = button("분리", "warning");
-  const remove = button("삭제", "danger");
-  split.disabled = Number(item.image_count || 1) <= 1;
-  actions.append(save, favorite, pastExam, sameFigure, crop, split, remove);
+  const remove = button("삭제", "danger delete-trigger");
+  const confirmRemove = button("삭제 확인", "danger confirm-delete hidden");
+  favorite.dataset.reviewToggle = "favorite";
+  pastExam.dataset.reviewToggle = "past-exam";
+  setDraftToggle(favorite, item.is_favorite, "즐겨찾기 해제", "즐겨찾기");
+  setDraftToggle(pastExam, item.is_past_exam, "기출 해제", "기출");
+  split.disabled = Number(item.image_count || 0) <= 1;
+  actions.append(save, favorite, pastExam, sameFigure, split, remove, confirmRemove);
+  const hideDeleteConfirmation = () => confirmRemove.classList.add("hidden");
 
-  const markAnswerEdited = () => {
-    article.dataset.answerEdited = "1";
-    caption.value = composeCaption(caption.value, answerTitle.value, answerDetail.value);
-    title.textContent = answerTitle.value.trim() || figureLabel(item);
-    subtitle.textContent = answerDetail.value.trim() || caption.value.trim() || "caption 없음";
-  };
-  answerTitle.addEventListener("input", markAnswerEdited);
-  answerDetail.addEventListener("input", markAnswerEdited);
+  save.addEventListener("click", () => {
+    hideDeleteConfirmation();
+    saveCard(article).catch((error) => showToast(error.message));
+  });
+  favorite.addEventListener("click", () => {
+    hideDeleteConfirmation();
+    setDraftToggle(favorite, favorite.dataset.active !== "true", "즐겨찾기 해제", "즐겨찾기");
+  });
+  pastExam.addEventListener("click", () => {
+    hideDeleteConfirmation();
+    setDraftToggle(pastExam, pastExam.dataset.active !== "true", "기출 해제", "기출");
+  });
+  sameFigure.addEventListener("click", () => {
+    hideDeleteConfirmation();
+    filterSameFigure(item);
+  });
+  split.addEventListener("click", () => {
+    hideDeleteConfirmation();
+    splitCard(item).catch((error) => showToast(error.message));
+  });
+  remove.addEventListener("click", () => {
+    confirmRemove.classList.remove("hidden");
+    confirmRemove.focus();
+  });
+  confirmRemove.addEventListener("click", () => deleteCard(item).catch((error) => showToast(error.message)));
 
-  save.addEventListener("click", () => saveCard(article).catch((error) => showToast(error.message)));
-  favorite.addEventListener("click", () => toggleFavorite(item).catch((error) => showToast(error.message)));
-  pastExam.addEventListener("click", () => togglePastExam(item).catch((error) => showToast(error.message)));
-  sameFigure.addEventListener("click", () => filterSameFigure(item));
-  crop.addEventListener("click", () => showCrop([item.card_id]).catch((error) => showToast(error.message)));
-  split.addEventListener("click", () => splitCard(item).catch((error) => showToast(error.message)));
-  remove.addEventListener("click", () => deleteCard(item).catch((error) => showToast(error.message)));
-
-  body.append(topLine, answerFields, captionLabel, notesLabel, actions);
+  body.append(actions, typeControl, fields, advanced);
   article.append(imagePane, body);
+  syncTypeFields(article);
   return article;
 }
 
@@ -306,10 +590,10 @@ async function loadCards() {
   if (!data.items.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "이 조건에 맞는 카드가 없습니다.";
+    empty.textContent = "현재 필터에 맞는 카드가 없습니다.";
     els.list.appendChild(empty);
   } else {
-    data.items.forEach((item) => els.list.appendChild(cardTemplate(item)));
+    data.items.forEach((item) => els.list.appendChild(cardTile(item)));
   }
 
   const start = data.items.length ? state.offset + 1 : 0;
@@ -317,6 +601,7 @@ async function loadCards() {
   els.pageLabel.textContent = `${start}-${end} / ${state.total}`;
   els.prev.disabled = state.offset === 0;
   els.next.disabled = state.offset + state.limit >= state.total;
+  renderPageNumbers();
   updateBulkButtons();
 }
 
@@ -332,21 +617,61 @@ async function refresh() {
   }
 }
 
+async function exportStatic() {
+  if (!els.exportStatic) return;
+  const originalText = els.exportStatic.textContent;
+  els.exportStatic.disabled = true;
+  els.exportStatic.textContent = "저장 중...";
+  try {
+    const result = await fetchJson("/api/static-export", { method: "POST" });
+    showToast(`static 저장 완료: ${result.cards}장`);
+  } finally {
+    els.exportStatic.disabled = false;
+    els.exportStatic.textContent = originalText;
+  }
+}
+
 async function saveCard(article) {
   const id = Number(article.dataset.id);
+  const cardType = article.querySelector(".card-type-select").value;
+  const favoriteToggle = article.querySelector('[data-review-toggle="favorite"]');
+  const pastExamToggle = article.querySelector('[data-review-toggle="past-exam"]');
   const payload = {
+    card_type: cardType,
+    prompt_text: cardType === "image" ? "" : article.querySelector(".prompt-input").value,
+    answer_text: article.querySelector(".answer-text-input").value,
+    answer_explanation: article.querySelector(".answer-explanation-input").value,
+    choices: cardType === "multiple_choice" ? parseChoices(article.querySelector(".choices-input").value) : [],
+    answer_choice_ids:
+      cardType === "multiple_choice" ? choiceIdsFromInput(article.querySelector(".answer-choice-ids-input").value) : [],
+    source_label: article.querySelector(".source-label-input").value,
+    chapter: article.querySelector(".chapter-input").value,
+    sort_order: Number(article.querySelector(".sort-order-input").value || 0),
     caption_text: article.querySelector(".caption").value,
     notes: article.querySelector(".notes").value,
   };
-  if (article.dataset.answerEdited === "1") {
-    payload.answer_title = article.querySelector(".answer-title-input").value;
-    payload.answer_detail = article.querySelector(".answer-detail-input").value;
-  }
   await fetchJson(`/api/cards/${id}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
-  showToast(`#${id} 저장됨`);
+  await Promise.all([
+    fetchJson("/api/study/favorite", {
+      method: "POST",
+      body: JSON.stringify({
+        card_id: id,
+        favorite: favoriteToggle?.dataset.active === "true",
+      }),
+    }),
+    fetchJson("/api/study/past-exam", {
+      method: "POST",
+      body: JSON.stringify({
+        card_id: id,
+        past_exam: pastExamToggle?.dataset.active === "true",
+      }),
+    }),
+  ]);
+  showToast(`#${id} 저장했습니다`);
+  closeEditor();
   await refresh();
 }
 
@@ -358,7 +683,8 @@ async function toggleFavorite(item) {
       favorite: !item.is_favorite,
     }),
   });
-  showToast(item.is_favorite ? `즐겨찾기 해제 #${item.card_id}` : `즐겨찾기 등록 #${item.card_id}`);
+  showToast(item.is_favorite ? `#${item.card_id} 즐겨찾기를 해제했습니다` : `#${item.card_id} 즐겨찾기에 추가했습니다`);
+  closeEditor();
   await refresh();
 }
 
@@ -370,44 +696,34 @@ async function togglePastExam(item) {
       past_exam: !item.is_past_exam,
     }),
   });
-  showToast(item.is_past_exam ? `기출 해제 #${item.card_id}` : `기출문제 등록 #${item.card_id}`);
+  showToast(item.is_past_exam ? `#${item.card_id} 기출 표시를 해제했습니다` : `#${item.card_id} 기출로 표시했습니다`);
+  closeEditor();
   await refresh();
 }
 
 function filterSameFigure(item) {
-  if (!item.figure_key) {
-    showToast("그림 번호를 찾을 수 없습니다.");
+  const key = item.figure_key || figureKeyFromLabel(figureLabel(item));
+  if (!key) {
+    showToast("이 카드에는 출처 라벨이 없습니다");
     return;
   }
-  els.figure.value = item.figure_key;
+  els.figure.value = key;
   applyFilterInputs();
+  closeEditor();
   refresh();
 }
 
-async function showCrop(ids) {
-  if (!ids.length) {
-    showToast("카드를 선택하세요.");
-    return null;
-  }
-  const data = await fetchJson(`/api/cards/pdf-crop?card_ids=${ids.join(",")}`);
-  els.cropPreview.replaceChildren();
-  const image = document.createElement("img");
-  image.src = data.image_url;
-  image.alt = `PDF crop page ${data.page_number}`;
-  const label = document.createElement("p");
-  label.textContent = `p.${data.page_number} | ${ids.map((id) => `#${id}`).join(", ")}`;
-  els.cropPreview.append(image, label);
-  return data;
+function figureKeyFromLabel(label) {
+  return String(label || "").replace(/^Fig\.\s*/i, "").replace(/\.$/, "");
 }
 
 async function mergeSelectedCards() {
   const ids = Array.from(state.selected);
   if (ids.length < 2) {
-    showToast("병합할 카드를 2개 이상 선택하세요.");
+    showToast("합치려면 카드를 두 개 이상 선택하세요");
     return;
   }
-  await showCrop(ids);
-  if (!window.confirm("PDF crop을 확인한 뒤 선택한 카드를 병합할까요?")) return;
+  if (!window.confirm("선택한 카드를 합칠까요?")) return;
   const keepId = Math.min(...ids);
   await fetchJson("/api/cards/merge", {
     method: "POST",
@@ -417,30 +733,30 @@ async function mergeSelectedCards() {
     }),
   });
   state.selected.clear();
-  showToast(`병합 완료 #${keepId}`);
+  showToast(`#${keepId}로 합쳤습니다`);
   await refresh();
 }
 
 async function splitCard(item) {
-  if (!window.confirm(`#${item.card_id} 카드를 이미지별로 다시 분리할까요?`)) return;
+  if (!window.confirm(`#${item.card_id}를 이미지별 카드로 분리할까요?`)) return;
   const data = await fetchJson(`/api/cards/${item.card_id}/split`, { method: "POST" });
   showToast(`분리 완료: ${data.card_ids.map((id) => `#${id}`).join(", ")}`);
+  closeEditor();
   await refresh();
 }
 
 async function deleteCard(item) {
-  if (!window.confirm(`#${item.card_id} 카드를 삭제할까요? 원본 추출 이미지는 보존됩니다.`)) return;
   await fetchJson(`/api/cards/${item.card_id}`, { method: "DELETE" });
   state.selected.delete(Number(item.card_id));
-  showToast(`#${item.card_id} 삭제됨`);
+  showToast(`#${item.card_id} 삭제했습니다`);
+  closeEditor();
   await refresh();
 }
 
 function updateBulkButtons() {
   const count = state.selected.size;
   els.mergeSelected.disabled = count < 2;
-  els.cropSelected.disabled = count < 1;
-  els.viewTitle.textContent = count ? `카드 관리 (${count} selected)` : "카드 관리";
+  els.viewTitle.textContent = count ? `카드 관리 (${count}개 선택)` : "카드 관리";
 }
 
 els.applyFilters.addEventListener("click", () => {
@@ -448,8 +764,8 @@ els.applyFilters.addEventListener("click", () => {
   refresh();
 });
 
-[els.query, els.chapter, els.page, els.figure].forEach((input) => {
-  input.addEventListener("keydown", (event) => {
+[els.query, els.chapter, els.page, els.figure].forEach((field) => {
+  field.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       applyFilterInputs();
       refresh();
@@ -457,8 +773,8 @@ els.applyFilters.addEventListener("click", () => {
   });
 });
 
-[els.pastExamOnly, els.multiOnly].forEach((input) => {
-  input.addEventListener("change", () => {
+[els.pastExamOnly, els.multiOnly].forEach((field) => {
+  field.addEventListener("change", () => {
     applyFilterInputs();
     refresh();
   });
@@ -471,8 +787,10 @@ els.pageSize.addEventListener("change", () => {
 });
 
 els.refresh.addEventListener("click", () => refresh());
+if (els.exportStatic) {
+  els.exportStatic.addEventListener("click", () => exportStatic().catch((error) => showToast(error.message)));
+}
 els.mergeSelected.addEventListener("click", () => mergeSelectedCards().catch((error) => showToast(error.message)));
-els.cropSelected.addEventListener("click", () => showCrop(Array.from(state.selected)).catch((error) => showToast(error.message)));
 
 els.prev.addEventListener("click", () => {
   state.offset = Math.max(0, state.offset - state.limit);
@@ -480,8 +798,12 @@ els.prev.addEventListener("click", () => {
 });
 
 els.next.addEventListener("click", () => {
-  state.offset += state.limit;
+  state.offset = Math.min(Math.max(0, state.total - 1), state.offset + state.limit);
   refresh();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeEditor();
 });
 
 updateBulkButtons();

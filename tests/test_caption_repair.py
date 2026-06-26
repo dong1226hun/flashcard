@@ -43,7 +43,7 @@ def add_card(conn, image_index, caption, image_bbox, caption_block_id=None):
         (
             image_index,
             image_index,
-            f"assets/image-{image_index}.png",
+            f"data/media/pdf/doc1/page-1/image-{image_index}.png",
             f"imagehash-{image_index}",
             image_bbox,
         ),
